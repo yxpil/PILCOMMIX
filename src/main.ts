@@ -1669,29 +1669,6 @@ $id("btn-trans-play").addEventListener("click", async () => {
   requestAnimationFrame(drive);
 });
 
-// 扬声器测试:播放 440Hz 测试音,确认扬声器链路
-$id("btn-test-sound").addEventListener("click", async () => {
-  await engine.resume();
-  engine.allOff();
-  const ctx = engine.ctx;
-  const t = ctx.currentTime + 0.05;
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = "sine";
-  osc.frequency.value = 440;
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(0.8, t + 0.02);
-  g.gain.setValueAtTime(0.8, t + 0.45);
-  g.gain.linearRampToValueAtTime(0, t + 0.6);
-  osc.connect(g);
-  g.connect(engine.master);
-  osc.start(t);
-  osc.stop(t + 0.65);
-  const st = $id("trans-status");
-  st.textContent = "测试声音:440Hz 蜂鸣(0.6 秒)— 听到了吗?";
-  st.classList.add("on");
-});
-
 // 停止播放
 $id("btn-trans-stop").addEventListener("click", () => {
   engine.allOff();
@@ -1700,59 +1677,6 @@ $id("btn-trans-stop").addEventListener("click", () => {
   $id("btn-trans-play").classList.remove("running");
   $id("trans-status").textContent = "已停止";
   playUiCleanup();
-});
-
-// 导出 WAV:按各轨音色播放并录制 → 保存 WAV
-$id("btn-trans-wav").addEventListener("click", async () => {
-  if (!transState.smf || transState.smf.notes.length === 0) {
-    toast("请先打开 MIDI 文件");
-    return;
-  }
-  const smf = transState.smf;
-  await engine.resume();
-  engine.allOff();
-  const secPerTick = (smf.usPerQuarter / 1e6) / smf.division;
-  const endTick = smf.notes.reduce((m, n) => Math.max(m, n.tick + n.dur), 0);
-  const startAt = engine.ctx.currentTime + Math.min(2.5, 0.4 + smf.notes.length * 0.0007);
-  // 用当前面板音色演奏(不切换音色)
-  for (const n of smf.notes) {
-    engine.noteOn(n.note, Math.max(0.05, n.vel / 127), startAt + n.tick * secPerTick);
-    engine.noteOff(n.note, false, startAt + (n.tick + n.dur) * secPerTick);
-  }
-  // 录制
-  recChunks = [];
-  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-    ? "audio/webm;codecs=opus" : "audio/webm";
-  mediaRecorder = new MediaRecorder(engine.recorderDest.stream, { mimeType: mime });
-  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recChunks.push(e.data); };
-  mediaRecorder.start();
-  const totalMs = (endTick * secPerTick + 1.2) * 1000 + 600;
-  $id("trans-status").textContent = `导出 WAV:正在按 ${Math.round(60000000 / smf.usPerQuarter)} BPM 播放合成(${(totalMs / 1000).toFixed(1)}s)`;
-  $id("trans-status").classList.add("on");
-  await new Promise((r) => setTimeout(r, totalMs));
-  const done = new Promise<void>((res) => {
-    mediaRecorder!.onstop = () => res();
-    mediaRecorder!.stop();
-  });
-  await done;
-  try {
-    const blob = new Blob(recChunks, { type: "audio/webm" });
-    if (blob.size === 0) { toast("导出音频为空"); return; }
-    const buf = await blob.arrayBuffer();
-    const audioBuf = await engine.ctx.decodeAudioData(buf);
-    const wav = audioBufferToWav(audioBuf);
-    const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    const path = await invoke<string>("save_recording", {
-      bytes: Array.from(new Uint8Array(wav)),
-      suggestedName: `COMMIX-转录-${stamp}.wav`,
-    });
-    toast("WAV 已保存: " + path.split(/[\\\\/]/).pop());
-    $id("trans-status").textContent = "WAV 导出完成";
-  } catch (err) {
-    console.error(err);
-    toast("WAV 导出失败: " + String(err).slice(0, 60));
-    $id("trans-status").textContent = "WAV 导出失败";
-  }
 });
 
 $id("btn-trans-clear").addEventListener("click", () => {
