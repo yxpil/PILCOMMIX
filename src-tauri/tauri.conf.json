@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "COMMIX",
+  "version": "0.1.0",
+  "identifier": "com.commix.synth",
+  "app": {
+    "windows": [{
+      "title": "COMMIX",
+      "width": 1180,
+      "height": 780,
+      "minWidth": 900,
+      "minHeight": 620,
+      "decorations": false,
+      "transparent": false,
+      "center": true,
+      "resizable": true
+    }],
+    "security": {
+      "csp": null
+    }
+  },
+  "build": {
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Music",
+    "shortDescription": "COMMIX 桌面合成器",
+    "longDescription": "Web Audio 合成器:MIDI 输入输出、8 种音色、力度曲线、录音转录、MIDI 文件播放"
+  }
+}
