@@ -145,6 +145,24 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// 简易 HTTP GET:调系统自带 curl.exe(Windows 10+ 自带),绕过 WebView CORS 限制
+#[tauri::command]
+async fn http_get(url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = std::process::Command::new("curl.exe")
+            .args(["-s", "--max-time", "10", "-L"])
+            .arg(&url)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!("curl exit {}", out.status));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 用系统默认浏览器打开外部 URL(更新下载/帮助链接,零依赖)
 #[tauri::command]
 fn open_external(url: String) {
@@ -172,7 +190,8 @@ pub fn run() {
             save_recording,
             save_midi,
             open_midi,
-            open_external
+            open_external,
+            http_get
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

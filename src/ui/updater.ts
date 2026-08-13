@@ -1,5 +1,5 @@
-// 版本检查:fetch 拉取 https://yxpil.com/version/commix 的版本公示(标准 JSON),
-// 比对本地版本,有新版本显示更新横幅,点击用系统浏览器打开下载地址
+// 版本检查:经 Rust 侧 curl.exe 拉取 https://yxpil.com/version/commix 的版本公示(标准 JSON),
+// 绕过 WebView CORS 限制;比对本地版本,有新版本显示更新横幅,点击用系统浏览器打开下载地址
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { $id, toast } from "./dom";
@@ -30,12 +30,8 @@ let checkedOnce = false;
 export async function checkUpdate(manual: boolean) {
   if (!manual && checkedOnce) return;
   checkedOnce = true;
-  const ctl = new AbortController();
-  const timer = window.setTimeout(() => ctl.abort(), 8000);
   try {
-    const res = await fetch(UPDATE_URL + "?t=" + Date.now(), { signal: ctl.signal });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const text = (await res.text()).trim();
+    const text = (await invoke<string>("http_get", { url: UPDATE_URL + "?t=" + Date.now() })).trim();
     // 宽松解析:标准 JSON 或纯版本号("0.3" 这种也认)
     let info: UpdateInfo | null = null;
     if (text.startsWith("{")) {
@@ -59,8 +55,6 @@ export async function checkUpdate(manual: boolean) {
     }
   } catch {
     if (manual) toast("检查更新失败(无法访问更新服务器)");
-  } finally {
-    window.clearTimeout(timer);
   }
 }
 
