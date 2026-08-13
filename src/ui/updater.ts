@@ -27,6 +27,11 @@ function verCmp(a: string, b: string): number {
 
 let checkedOnce = false;
 
+// 顶栏「更新」按钮只在发现新版本时显示
+function showUpdateBtn(on: boolean) {
+  ($id("btn-check-update") as HTMLElement).style.display = on ? "" : "none";
+}
+
 export async function checkUpdate(manual: boolean) {
   if (!manual && checkedOnce) return;
   checkedOnce = true;
@@ -41,19 +46,23 @@ export async function checkUpdate(manual: boolean) {
       info = { version: text };
     }
     if (!info) {
+      showUpdateBtn(false);
       if (manual) toast("更新信息格式无效");
       return;
     }
     const cur = await getVersion().catch(() => "");
     if (verCmp(info.version, cur) > 0) {
+      showUpdateBtn(true);
       $id("ub-text").textContent = "发现新版本 v" + info.version + "(当前 v" + cur + ")";
       $id("ub-notes").textContent = info.notes ? "更新内容:" + info.notes : "";
       $id("ub-download").dataset.url = info.url ?? DOWNLOAD_URL;
       $id("update-banner").style.display = "flex";
-    } else if (manual) {
-      toast("已是最新版本 v" + cur);
+    } else {
+      showUpdateBtn(false);
+      if (manual) toast("已是最新版本 v" + cur);
     }
   } catch {
+    showUpdateBtn(false);
     if (manual) toast("检查更新失败(无法访问更新服务器)");
   }
 }
