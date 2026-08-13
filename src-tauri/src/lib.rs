@@ -145,6 +145,21 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// 用系统默认浏览器打开外部 URL(更新下载/帮助链接,零依赖)
+#[tauri::command]
+fn open_external(url: String) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -156,7 +171,8 @@ pub fn run() {
             midi_send,
             save_recording,
             save_midi,
-            open_midi
+            open_midi,
+            open_external
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

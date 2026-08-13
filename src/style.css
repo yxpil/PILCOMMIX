@@ -856,3 +856,29 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 .wt-banks .preset-btn { padding: 4px 8px; font-size: 11px; }
 .wt-slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; margin-bottom: 10px; }
 .wt-slot-grid .sp-item select { width: 100%; }
+
+/* ---------- 新功能控件布局 ---------- */
+.tab-bar { flex-wrap: wrap; row-gap: 4px; }
+.tab-bar .tab-btn { padding: 5px 9px; font-size: 11px; }
+.fx-head { margin-top: 12px; }
+.scope-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
+.arp-row { margin-top: 4px; }
+.arp-select { flex: 0 0 auto; width: auto; padding: 3px 6px; font-size: 11px; }
+.arp-btn { min-width: 44px; }
+.arp-btn.running { background: var(--accent); border-color: var(--accent); color: #fff; }
+.modlfo-panel { margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(149, 213, 178, 0.15); }
+.sustain-led { margin: 0 2px; }
+.play-row .ctrl-val { font-size: 10px; color: var(--text-dim); }
+
+/* ---------- 版本检查 ---------- */
+.tb-update { width: auto; padding: 0 10px; font-size: 11px; color: var(--text-dim); }
+.tb-update:hover { color: #7dff9b; }
+.update-banner {
+  position: fixed; top: 42px; left: 50%; transform: translateX(-50%);
+  z-index: 999; display: flex; align-items: center; gap: 10px;
+  background: rgba(16, 32, 24, 0.96); border: 1px solid rgba(125, 255, 155, 0.35);
+  border-radius: 8px; padding: 8px 14px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.ub-text { color: #7dff9b; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.ub-notes { color: var(--text-dim); font-size: 11px; max-width: 380px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ub-btn { padding: 4px 12px; font-size: 11px; }
