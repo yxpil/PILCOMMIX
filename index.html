@@ -53,6 +53,7 @@
             <button class="preset-btn" data-wave="clar" title="奇数谐波单簧管">PILO1</button>
             <button class="preset-btn" data-wave="harp" title="快衰减拨弦竖琴">PILD1</button>
             <button class="preset-btn" data-wave="guzheng" title="长余音古筝">PILS1</button>
+            <button class="preset-btn" data-wave="wt" title="波表合成:8 槽位形态渐变 + 形态 LFO">PILW1</button>
           </div>
           <div class="wave-canvas-wrap">
             <canvas id="wave-canvas"></canvas>
@@ -110,6 +111,7 @@
           <!-- 分类选项卡 -->
           <div class="tab-bar" id="tab-bar">
             <button class="tab-btn active" data-tab="tone">音色</button>
+            <button class="tab-btn" data-tab="wt">渐变</button>
             <button class="tab-btn" data-tab="env">包络</button>
             <button class="tab-btn" data-tab="play">演奏</button>
             <button class="tab-btn" data-tab="metro">节拍</button>
@@ -226,6 +228,35 @@
             </div>
           </div>
 
+          <!-- 渐变:波表形态(多组渐变 + 槽位编辑 + 形态 LFO) -->
+          <div class="tab-body" id="tab-wt">
+            <div class="wt-bank-row">
+              <span class="ctrl-label">渐变组</span>
+              <div class="wt-banks" id="wt-banks"></div>
+              <button class="tool-btn" id="wt-bank-add" title="新增渐变组">+</button>
+              <button class="tool-btn" id="wt-bank-del" title="删除当前渐变组">删除</button>
+            </div>
+            <div class="wt-slot-grid" id="wt-slot-grid"></div>
+            <div class="sp-grid">
+              <div class="sp-item sp-wide">
+                <label>波形形态</label>
+                <input type="range" id="wt-pos" min="0" max="100" value="30" />
+                <span class="env-val" id="wt-pos-val">30%</span>
+              </div>
+              <div class="sp-item">
+                <label>形态 LFO 速率</label>
+                <input type="range" id="wt-lfo-rate" min="0" max="2000" value="0" />
+                <span class="env-val" id="wt-lfo-rate-val">0Hz</span>
+              </div>
+              <div class="sp-item">
+                <label>形态 LFO 深度</label>
+                <input type="range" id="wt-lfo-depth" min="0" max="100" value="0" />
+                <span class="env-val" id="wt-lfo-depth-val">0%</span>
+              </div>
+            </div>
+            <div class="vel-hint">每组渐变 = 8 个槽位的有序波形,形态位置在组内连续渐变 · 槽位可选任意波形,改动即生效并保存 · 仅 PILW1(波表)音色使用 · 可建多组随时切换</div>
+          </div>
+
           <!-- 包络:ADSR + 混响 -->
           <div class="tab-body" id="tab-env">
             <div class="env-grid">
@@ -278,6 +309,12 @@
                 <input type="range" id="vib-depth" min="0" max="100" value="0" />
                 <span class="ctrl-val" id="vib-depth-val">0%</span>
               </div>
+            </div>
+            <div class="midi-out-row">
+              <label class="ctrl-label">MIDI 输入</label>
+              <select id="midi-in" class="midi-select">
+                <option value="">无(仅电脑键盘)</option>
+              </select>
             </div>
             <div class="midi-out-row">
               <label class="ctrl-label">MIDI 输出</label>

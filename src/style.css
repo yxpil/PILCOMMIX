@@ -849,3 +849,10 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 ::-webkit-scrollbar-thumb { background: rgba(149, 213, 178, 0.2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(149, 213, 178, 0.35); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 渐变(波表形态) ---------- */
+.wt-bank-row { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.wt-banks { display: flex; gap: 6px; flex-wrap: wrap; }
+.wt-banks .preset-btn { padding: 4px 8px; font-size: 11px; }
+.wt-slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; margin-bottom: 10px; }
+.wt-slot-grid .sp-item select { width: 100%; }

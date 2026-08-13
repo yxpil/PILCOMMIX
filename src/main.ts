@@ -30,7 +30,8 @@ const MAX_VOICES = 32;
 // 波形类型:内置 4 种 + 自定义 + 合成器预设
 type WaveType = "sine" | "square" | "saw" | "triangle" | "custom"
   | "moog" | "dx7" | "piano" | "drip"
-  | "acc" | "clar" | "harp" | "guzheng";
+  | "acc" | "clar" | "harp" | "guzheng"
+  | "wt";
 
 // 钢琴音色:加法合成(非调和泛音 + 独立衰减 + 双弦失谐 + 锤击噪声)
 // 每个泛音幅度与衰减时间(高次泛音衰减更快,这是钢琴音色的关键)
@@ -55,7 +56,20 @@ interface SynthDef {
 const PRESET_DEFS: Record<string, SynthDef> = {
   // Minimoog:单锯齿 + 4-pole 低通(温暖)
   moog:   { oscWave: "sawtooth", filterType: "lowpass", cutoff: 2600, resonance: 0.7 },
-  // DX7:FM 合成,不走此表(单独路径)
+};
+
+// 波表(Wavetable)槽位:形态位置在槽位间连续渐变(等功率交叉淡化)
+const WT_SLOTS: SynthEngine["waveType"][] = ["sine", "triangle", "square", "saw", "dx7", "harp", "guzheng", "custom"];
+const WT_SLOT_NAMES: Record<string, string> = {
+  sine: "正弦", triangle: "三角", square: "方波", saw: "锯齿",
+  dx7: "FM", harp: "竖琴", guzheng: "古筝", custom: "自定义",
+};
+// 渐变槽位可选波形(下拉用)
+const WT_SLOT_OPTIONS: SynthEngine["waveType"][] = ["sine", "triangle", "square", "saw", "dx7", "piano", "drip", "acc", "clar", "harp", "guzheng", "custom"];
+const WT_SLOT_OPTION_NAMES: Record<string, string> = {
+  sine: "正弦", triangle: "三角", square: "方波", saw: "锯齿", dx7: "FM",
+  piano: "钢琴", drip: "水滴", acc: "手风琴", clar: "单簧管", harp: "竖琴",
+  guzheng: "古筝", custom: "自定义",
 };
 
 // DX7 是 FM 合成器:载波 + 调制算子,音色由 FM 边带和调制指数包络决定。
@@ -158,6 +172,16 @@ class SynthEngine {
   dripTimeMs = 150;                // 下滑时间 50-500ms
   dripDecayMs = 300;               // 衰减时间 100-1000ms
 
+  // 波表合成参数(形态渐变 + LFO)
+  wtPos = 0.3;                     // 波形形态位置 0..1(槽位间连续渐变)
+  wtLfoRate = 0;                   // 形态 LFO 频率 Hz(0=关)
+  wtLfoDepth = 0;                  // 形态 LFO 深度 0..1(1=扫满整表)
+  wtSlots: SynthEngine["waveType"][] = [...WT_SLOTS];   // 当前渐变组的槽位波形(渐变选项卡可换)
+  wtLfoT0 = 0;                     // LFO 相位零点
+  private wtBank: PeriodicWave[] | null = null;   // 波表槽位缓存
+  private wtBankDirty = true;      // 缓存失效(谐波/自定义波形变化)
+  wtVoiceMap = new Map<number, GainNode[]>();     // 活跃 WT 音符 → 槽位增益(midi → gains)
+
   constructor() {
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     this.master = this.ctx.createGain();
@@ -186,6 +210,7 @@ class SynthEngine {
     const nd = nb.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
     this.noiseBuffer = nb;
+    this.wtLfoT0 = this.ctx.currentTime;
   }
 
   makeImpulse(seconds: number, decay: number): AudioBuffer {
@@ -223,10 +248,14 @@ class SynthEngine {
       pianoDecayScale: this.pianoDecayScale, pianoDetuneCents: this.pianoDetuneCents,
       pianoNoiseLevel: this.pianoNoiseLevel, pianoBright: this.pianoBright,
       dripRatio: this.dripRatio, dripTimeMs: this.dripTimeMs, dripDecayMs: this.dripDecayMs,
+      wtPos: this.wtPos, wtLfoRate: this.wtLfoRate, wtLfoDepth: this.wtLfoDepth,
     };
     try { this.ctx.close(); } catch { /* 已关闭 */ }
     this.active.clear();
     this.voiceOrder = [];
+    this.wtVoiceMap.clear();
+    this.wtBank = null;
+    this.wtBankDirty = true;
     // 重建音频图(与构造函数一致)
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     this.master = this.ctx.createGain();
@@ -264,23 +293,19 @@ class SynthEngine {
     this.pianoDecayScale = p.pianoDecayScale; this.pianoDetuneCents = p.pianoDetuneCents;
     this.pianoNoiseLevel = p.pianoNoiseLevel; this.pianoBright = p.pianoBright;
     this.dripRatio = p.dripRatio; this.dripTimeMs = p.dripTimeMs; this.dripDecayMs = p.dripDecayMs;
+    this.wtPos = p.wtPos; this.wtLfoRate = p.wtLfoRate; this.wtLfoDepth = p.wtLfoDepth;
+    this.wtLfoT0 = this.ctx.currentTime;
     this.setReverb(p.reverb);
     this.resume();
   }
 
-  // 生成 PeriodicWave:内置波形按谐波截断,自定义波形由锚点 DFT
+  // 生成 PeriodicWave:内置波形按谐波截断,自定义/预设波形由采样 DFT
   buildWave(type: SynthEngine["waveType"], anchors: { x: number; y: number }[]): PeriodicWave {
     const N = this.harmonics;
-    const real = new Float32Array(N + 1);
-    const imag = new Float32Array(N + 1);
-    real[0] = 0; imag[0] = 0;
-    if (type === "custom") {
-      // 锚点线性插值 → 采样,再 DFT
-      const samples = new Float64Array(WAVE_LEN);
-      for (let i = 0; i < WAVE_LEN; i++) {
-        const px = i / WAVE_LEN;
-        samples[i] = interpAnchors(anchors, px);
-      }
+    // 采样 → DFT → PeriodicWave(自定义与预设波形共用)
+    const dft = (samples: Float64Array): PeriodicWave => {
+      const real = new Float32Array(N + 1);
+      const imag = new Float32Array(N + 1);
       for (let k = 1; k <= N; k++) {
         let re = 0, im = 0;
         for (let i = 0; i < WAVE_LEN; i++) {
@@ -291,17 +316,31 @@ class SynthEngine {
         real[k] = re / WAVE_LEN * 2;
         imag[k] = im / WAVE_LEN * 2;
       }
-      // 去掉直流
-      real[0] = 0;
-    } else {
-      for (let k = 1; k <= N; k++) {
-        const n = k;
-        switch (type) {
-          case "sine": imag[k] = n === 1 ? 1 : 0; break;
-          case "square": if (n % 2 === 1) imag[k] = 1 / n; break;
-          case "saw": imag[k] = 1 / n; break;
-          case "triangle": if (n % 2 === 1) imag[k] = (n % 4 === 1 ? 1 : -1) / (n * n); break;
-        }
+      return this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+    };
+    if (type === "custom") {
+      // 锚点线性插值 → 采样,再 DFT
+      const samples = new Float64Array(WAVE_LEN);
+      for (let i = 0; i < WAVE_LEN; i++) samples[i] = interpAnchors(anchors, i / WAVE_LEN);
+      return dft(samples);
+    }
+    if (type === "dx7" || type === "piano" || type === "drip" || type === "acc"
+        || type === "clar" || type === "harp" || type === "guzheng") {
+      // 合成器预设波形:按 presetWaveAt 采样 → DFT(波表槽位用)
+      const samples = new Float64Array(WAVE_LEN);
+      for (let i = 0; i < WAVE_LEN; i++) samples[i] = presetWaveAt(type, i / WAVE_LEN);
+      return dft(samples);
+    }
+    const real = new Float32Array(N + 1);
+    const imag = new Float32Array(N + 1);
+    real[0] = 0; imag[0] = 0;
+    for (let k = 1; k <= N; k++) {
+      const n = k;
+      switch (type) {
+        case "sine": imag[k] = n === 1 ? 1 : 0; break;
+        case "square": if (n % 2 === 1) imag[k] = 1 / n; break;
+        case "saw": imag[k] = 1 / n; break;
+        case "triangle": if (n % 2 === 1) imag[k] = (n % 4 === 1 ? 1 : -1) / (n * n); break;
       }
     }
     return this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
@@ -310,7 +349,8 @@ class SynthEngine {
   // 合成器参数统一作用于所有波形:基础波形来源不同(内置=PeriodicWave,预设=专用合成结构)
   isSynthPreset(type: SynthEngine["waveType"]): boolean {
     return type === "moog" || type === "dx7" || type === "piano" || type === "drip"
-      || type === "acc" || type === "clar" || type === "harp" || type === "guzheng";
+      || type === "acc" || type === "clar" || type === "harp" || type === "guzheng"
+      || type === "wt";
   }
 
   private getWave(): PeriodicWave {
@@ -604,6 +644,56 @@ class SynthEngine {
       return;
     }
 
+    if (type === "wt") {
+      // 波表合成:8 个槽位振荡器同时发声,形态位置决定槽位间等功率交叉淡化
+      // 形态位置可由滑块手动或 LFO 实时驱动 → 持续音中波形动态变化
+      const bank = this.buildWtBank();
+      const nSlots = bank.length;
+      const slotGains: GainNode[] = [];
+      const filter = ctx.createBiquadFilter();
+      filter.type = this.filterKind;
+      filter.frequency.value = Math.max(20, this.cutoffHz);
+      filter.Q.value = this.resonanceQ;
+      if (this.cutoffEnvHz > 0) {
+        const base = Math.max(20, this.cutoffHz);
+        filter.frequency.setValueAtTime(base, t);
+        filter.frequency.exponentialRampToValueAtTime(
+          Math.min(18000, base + this.cutoffEnvHz), t + this.cutoffEnvMs / 1000);
+      }
+      for (let s = 0; s < nSlots; s++) {
+        const o = ctx.createOscillator();
+        o.setPeriodicWave(bank[s]);
+        o.frequency.value = freq;
+        if (this.vibratoDepth > 0) {
+          const lfo = ctx.createOscillator();
+          lfo.frequency.value = this.vibratoRate;
+          const lg = ctx.createGain();
+          lg.gain.value = this.vibratoDepth * freq * 0.05;
+          lfo.connect(lg);
+          lg.connect(o.frequency);
+          oscs.push(lfo);
+        }
+        const sg = ctx.createGain();
+        sg.gain.value = 0;
+        o.connect(sg);
+        sg.connect(filter);
+        oscs.push(o);
+        slotGains.push(sg);
+      }
+      filter.connect(g);
+      this.wtSlotWeights(this.wtPos, slotGains, t);
+      this.wtVoiceMap.set(midi, slotGains);
+      // 声像
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = this.pan;
+      g.connect(panner);
+      panner.connect(this.master);
+      for (const o of oscs) o.start(t);
+      this.active.set(midi, { oscs, gain: g, vel: velocity, onT: t });
+      this.voiceOrder.push(midi);
+      return;
+    }
+
     if (type === "dx7") {
       // FM 合成:载波正弦 + 调制算子(频率比 1:1 和 1:2),调制指数随包络衰减
       // 算子1:ratio 1, index 3→0.8;算子2:ratio 2, index 2→0.5
@@ -708,16 +798,58 @@ class SynthEngine {
       for (const o of v.oscs) o.stop(t + r + 0.05);
     }
     this.active.delete(midi);
+    this.wtVoiceMap.delete(midi);
     this.voiceOrder = this.voiceOrder.filter((n) => n !== midi);
   }
 
   // 换波形:只影响之后按下的音(不干扰正在响的音)
   setWave(type: SynthEngine["waveType"]) {
     this.waveType = type;
-    if (type !== "custom") this.customWave = null;
+    // 波表模式的"自定义"槽位仍需要 customWave,不在这里清除
+    if (type !== "custom" && type !== "wt") this.customWave = null;
   }
   setCustomWave(anchors: { x: number; y: number }[]) {
     this.customWave = this.buildWave("custom", anchors);
+    this.markWtDirty();
+  }
+  markWtDirty() { this.wtBank = null; this.wtBankDirty = true; }
+
+  // 构建波表槽位:内置波形 + 合成器预设波形 + 自定义波形(缓存,失效时重建)
+  buildWtBank(): PeriodicWave[] {
+    if (this.wtBank && !this.wtBankDirty) return this.wtBank;
+    this.wtBank = this.wtSlots.map((slot) => {
+      if (slot === "custom") return this.customWave ?? this.buildWave("sine", []);
+      return this.buildWave(slot, []);
+    });
+    this.wtBankDirty = false;
+    return this.wtBank;
+  }
+
+  // 槽位权重:等功率交叉淡化(正弦/余弦),位置 0..1 对应整张表
+  wtSlotWeights(pos: number, gains: GainNode[], t: number, smooth = false) {
+    const n = gains.length;
+    const scaled = Math.min(0.9999, Math.max(0, pos)) * (n - 1);
+    const i = Math.floor(scaled);
+    const frac = scaled - i;
+    const w0 = Math.cos((frac * Math.PI) / 2);
+    const w1 = Math.sin((frac * Math.PI) / 2);
+    const set = (g: GainNode, v: number) => {
+      const target = Math.max(0, Math.min(1, v));
+      if (smooth) g.gain.setTargetAtTime(target, this.ctx.currentTime, 0.02);
+      else g.gain.setValueAtTime(target, t);
+    };
+    for (let s = 0; s < n; s++) {
+      if (s === i) set(gains[s], w0);
+      else if (s === i + 1) set(gains[s], w1);
+      else set(gains[s], 0);
+    }
+  }
+
+  // 当前形态位置:静态位置 + LFO 偏移(JS 驱动,setTargetAtTime 平滑,无爆音)
+  currentWtPos(): number {
+    if (this.wtLfoDepth <= 0 || this.wtLfoRate <= 0) return this.wtPos;
+    const p = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.wtLfoRate * (this.ctx.currentTime - this.wtLfoT0));
+    return Math.min(1, Math.max(0, this.wtPos + this.wtLfoDepth * (p - 0.5) * 2));
   }
   updateMaster() { this.master.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02); }
 
@@ -773,14 +905,19 @@ function resizeCanvas() {
 }
 function canvasXY(e: MouseEvent) {
   const r = waveCanvas.getBoundingClientRect();
-  return { x: (e.clientX - r.left) / r.width, y: 1 - (e.clientY - r.top) / r.height };
+  // y 映射到 -1..1 全范围(与绘制一致):鼠标贴顶=+1、贴底=-1,曲线才跟手
+  return { x: (e.clientX - r.left) / r.width, y: 1 - 2 * (e.clientY - r.top) / r.height };
 }
 function hitAnchor(px: number, py: number): { x: number; y: number } | null {
-  const th = 14 / waveCanvas.width;   // 命中阈值(像素→归一化)
+  // 像素级命中判定(与新的 y 全幅映射一致)
+  const w = waveCanvas.width, h = waveCanvas.height;
+  const th = 14;
   let best: { x: number; y: number } | null = null;
   let bd = Infinity;
   for (const a of anchors) {
-    const d = Math.hypot(a.x - px, a.y - py);
+    const ax = a.x * w;
+    const ay = h / 2 - a.y * (h / 2);
+    const d = Math.hypot(ax - px * w, ay - py * h);
     if (d < th && d < bd) { bd = d; best = a; }
   }
   return best;
@@ -818,6 +955,7 @@ function drawWave() {
   ctx2d.clearRect(0, 0, w, h);
   const midY = h / 2;
   const isCustom = engine.waveType === "custom";
+  const isWt = engine.waveType === "wt";
 
   // 网格
   ctx2d.strokeStyle = "rgba(149,213,178,0.07)";
@@ -831,23 +969,47 @@ function drawWave() {
   ctx2d.moveTo(0, midY); ctx2d.lineTo(w, midY);
   ctx2d.stroke();
 
-  // 波形曲线:内置波形按类型函数值,自定义按锚点插值
+  // 波形曲线:内置波形按类型函数值,自定义按锚点插值,波表按形态渐变混合
   ctx2d.strokeStyle = "#95d5b2";
   ctx2d.lineWidth = 2;
   ctx2d.beginPath();
   for (let i = 0; i <= w; i += 2) {
     const px = i / w;
-    const yv = isCustom ? interpAnchors(anchors, px) : builtinWaveAt(engine.waveType, px);
-    const y = midY - yv * (h / 2 - 10);
+    const yv = isCustom ? interpAnchors(anchors, px)
+      : isWt ? wtMorphAt(px)
+      : builtinWaveAt(engine.waveType, px);
+    const y = midY - yv * (h / 2);
     if (i === 0) ctx2d.moveTo(i, y); else ctx2d.lineTo(i, y);
   }
   ctx2d.stroke();
+
+  // 波表模式:槽位分界线 + 当前形态位置 + 邻接槽位名
+  if (isWt) {
+    const n = engine.wtSlots.length;
+    ctx2d.strokeStyle = "rgba(149,213,178,0.15)";
+    ctx2d.lineWidth = 1;
+    for (let s = 1; s < n - 1; s++) {
+      const x = (s / (n - 1)) * w;
+      ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, h); ctx2d.stroke();
+    }
+    const pos = engine.currentWtPos();
+    const px = pos * w;
+    ctx2d.strokeStyle = "#7dff9b";
+    ctx2d.lineWidth = 1.5;
+    ctx2d.beginPath(); ctx2d.moveTo(px, 0); ctx2d.lineTo(px, h); ctx2d.stroke();
+    const scaled = Math.min(0.9999, Math.max(0, pos)) * (n - 1);
+    const i = Math.floor(scaled);
+    ctx2d.fillStyle = "#7dff9b";
+    ctx2d.font = "10px sans-serif";
+    ctx2d.fillText(WT_SLOT_NAMES[engine.wtSlots[i]] ?? "", 4, 12);
+    ctx2d.fillText(WT_SLOT_NAMES[engine.wtSlots[Math.min(n - 1, i + 1)]] ?? "", w - 46, h - 6);
+  }
 
   // 锚点(仅自定义模式显示)
   if (isCustom) {
     for (const a of anchors) {
       const ax = a.x * w;
-      const ay = midY - a.y * (h / 2 - 10);
+      const ay = midY - a.y * (h / 2);
       ctx2d.beginPath();
       ctx2d.arc(ax, ay, 5, 0, Math.PI * 2);
       ctx2d.fillStyle = "#40916c";
@@ -868,6 +1030,30 @@ function builtinWaveAt(type: SynthEngine["waveType"], p: number): number {
     case "triangle": return p < 0.5 ? 4 * p - 1 : 3 - 4 * p;
     default: return presetWaveAt(type, p);   // 合成器预设
   }
+}
+
+// 波表槽位波形函数(与发声一致)
+function wtSlotFnAt(slot: string, p: number): number {
+  switch (slot) {
+    case "sine": return Math.sin(2 * Math.PI * p);
+    case "triangle": return p < 0.5 ? 4 * p - 1 : 3 - 4 * p;
+    case "square": return p < 0.5 ? 1 : -1;
+    case "saw": return 2 * p - 1;
+    default: return presetWaveAt(slot, p);   // dx7/harp/guzheng
+  }
+}
+
+// 波表形态渐变预览:邻接槽位等功率混合(与发声权重一致)
+function wtMorphAt(p: number): number {
+  const n = engine.wtSlots.length;
+  const scaled = Math.min(0.9999, Math.max(0, engine.currentWtPos())) * (n - 1);
+  const i = Math.floor(scaled);
+  const frac = scaled - i;
+  const w0 = Math.cos((frac * Math.PI) / 2);
+  const w1 = Math.sin((frac * Math.PI) / 2);
+  const f0 = engine.wtSlots[i] === "custom" ? interpAnchors(anchors, p) : wtSlotFnAt(engine.wtSlots[i], p);
+  const f1 = engine.wtSlots[i + 1] === "custom" ? interpAnchors(anchors, p) : wtSlotFnAt(engine.wtSlots[i + 1], p);
+  return w0 * f0 + w1 * f1;
 }
 
 function applyWaveToEngine() {
@@ -899,6 +1085,9 @@ function setPreset(type: SynthEngine["waveType"]) {
     }
     if (type === "dx7") {
       $id("sp-note").textContent = "FM 音色:振荡器参数不适用";
+    } else if (type === "wt") {
+      $id("sp-note").textContent = "波表合成:渐变配置见「渐变」选项卡";
+      refreshWtUI();
     } else if (type === "piano") {
       $id("sp-note").textContent = "PILZ1 加法合成:钢琴参数可用";
       refreshPianoUI();
@@ -912,6 +1101,7 @@ function setPreset(type: SynthEngine["waveType"]) {
   }
   refreshPianoUI();
   refreshDripUI();
+  refreshWtUI();
   drawWave();
 }
 
@@ -1142,6 +1332,7 @@ $id("btn-reset-wave").addEventListener("click", () => {
 });
 $id("harmonics").addEventListener("input", (e) => {
   engine.harmonics = Number((e.target as HTMLInputElement).value);
+  engine.markWtDirty();
   applyWaveToEngine();
 });
 
@@ -1185,7 +1376,14 @@ window.addEventListener("keyup", (e) => {
   heldKeys.delete(e.code);
   noteOff(midi);
 });
-window.addEventListener("blur", () => { heldKeys.clear(); engine.allOff(); updateKeysUI(); });
+window.addEventListener("blur", () => {
+  heldKeys.clear();
+  mouseKeys.clear();
+  mouseHeldOnKeys = false;
+  midiHeld.clear();
+  engine.allOff();
+  updateKeysUI();
+});
 
 // ============ 力度曲线(输入力度 → 输出力度) ============
 // 锚点:x 固定 [0, 0.25, 0.5, 0.75, 1],y 可拖拽;分段线性插值
@@ -1365,6 +1563,7 @@ const transState = {
     ntrks: number;
     usPerQuarter: number;
     beatsPerBar: number;
+    programChanges: { track: number; tick: number; program: number }[];
   },
 };
 
@@ -1491,7 +1690,7 @@ function readVLQ(bytes: Uint8Array, pos: { i: number }): number {
   return v;
 }
 
-function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrks: number; usPerQuarter: number; beatsPerBar: number } {
+function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrks: number; usPerQuarter: number; beatsPerBar: number; programChanges: { track: number; tick: number; program: number }[] } {
   const pos = { i: 0 };
   const rd = (n: number) => {
     let v = 0;
@@ -1509,6 +1708,7 @@ function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrk
   let beatsPerBar = 4;         // 默认 4/4
 
   const rawEvents: { track: number; tick: number; ch: number; note: number; vel: number; on: boolean }[] = [];
+  const programChanges: { track: number; tick: number; program: number }[] = [];
   for (let tr = 0; tr < ntrks; tr++) {
     if (rd(4) !== 0x4d54726b) throw new Error("轨道头 MTrk 缺失");
     const len = rd(4);
@@ -1543,7 +1743,8 @@ function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrk
       }
       const kind = status & 0xf0;
       const ch = status & 0x0f;
-      if (kind === 0xc0 || kind === 0xd0) { pos.i += 1; continue; }   // 程序/通道压力
+      if (kind === 0xc0) { programChanges.push({ track: tr, tick, program: bytes[pos.i++] }); continue; }   // 程序变更(播放时切音色)
+      if (kind === 0xd0) { pos.i += 1; continue; }   // 通道压力
       const d1 = bytes[pos.i++];
       const d2 = bytes[pos.i++];
       if (kind === 0x90 && d2 > 0) rawEvents.push({ track: tr, tick, ch, note: d1, vel: d2, on: true });
@@ -1567,7 +1768,7 @@ function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrk
       }
     }
   }
-  return { notes, division, ntrks, usPerQuarter, beatsPerBar };
+  return { notes, division, ntrks, usPerQuarter, beatsPerBar, programChanges };
 }
 
 // ============ 转录(MIDI 文件播放:虚拟按键) ============
@@ -1629,10 +1830,14 @@ $id("btn-trans-play").addEventListener("click", async () => {
   engine.allOff();
   playUiCleanup();
   // 生成按键事件流:所有轨道音符合并,按时间排序(不做音色/轨道区分)
-  const events: { t: number; on: boolean; midi: number; vel: number }[] = [];
+  const events: { t: number; on: boolean; midi: number; vel: number; program?: number }[] = [];
   for (const n of smf.notes) {
     events.push({ t: n.tick, on: true, midi: n.note, vel: Math.max(1, Math.round(n.vel)) });
     events.push({ t: n.tick + n.dur, on: false, midi: n.note, vel: 0 });
+  }
+  // 程序变更事件:播放到该时刻自动切换音色(后续音符用新音色)
+  for (const pc of smf.programChanges) {
+    events.push({ t: pc.tick, on: false, midi: 0, vel: 0, program: pc.program });
   }
   events.sort((a, b) => a.t - b.t);
   const secPerTick = (smf.usPerQuarter / 1e6) / smf.division;
@@ -1652,7 +1857,8 @@ $id("btn-trans-play").addEventListener("click", async () => {
     // 触发所有到期按键(模拟键盘输入)
     while (idx < events.length && events[idx].t * secPerTick <= el) {
       const ev = events[idx++];
-      if (ev.on) playNoteOn(ev.midi, ev.vel / 127);
+      if (ev.program !== undefined) handleMidiProgramChange(ev.program);
+      else if (ev.on) playNoteOn(ev.midi, ev.vel / 127);
       else playNoteOff(ev.midi);
     }
     $id("trans-status").textContent = `播放中 ${fmt(Math.max(0, el))} / ${totalStr}`;
@@ -1787,6 +1993,9 @@ function buildKeyboard() {
 function isBlack(n: number) { return [1, 3, 6, 8, 10].includes(n % 12); }
 
 const mouseKeys = new Map<number, boolean>();
+let mouseHeldOnKeys = false;                 // 鼠标按下是否起始于琴键(防从别处拖入琴键区误触发)
+let mousePressPos: { x: number; y: number } | null = null;   // 按下位置(滑奏起始阈值)
+
 function bindKey(el: HTMLElement, midi: number) {
   const on = (e: Event) => {
     e.preventDefault();
@@ -1799,9 +2008,27 @@ function bindKey(el: HTMLElement, midi: number) {
     mouseKeys.delete(midi);
     noteOff(midi);
   };
-  el.addEventListener("mousedown", on);
-  el.addEventListener("mouseenter", (e) => { if ((e as MouseEvent).buttons & 1) on(e); });
-  window.addEventListener("mouseup", off);
+  el.addEventListener("mousedown", (e) => {
+    mouseHeldOnKeys = true;
+    mousePressPos = { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
+    on(e);
+  });
+  el.addEventListener("mouseenter", (e) => {
+    // 滑奏:仅当按下起始于琴键、且指针已移出起始阈值后才触发邻键
+    // (避免点击轻微抖动蹭响邻键、以及从面板/画布拖入琴键区时误触发一片)
+    if (!mouseHeldOnKeys) return;
+    if (!((e as MouseEvent).buttons & 1)) return;
+    if (mousePressPos) {
+      const dx = (e as MouseEvent).clientX - mousePressPos.x;
+      const dy = (e as MouseEvent).clientY - mousePressPos.y;
+      if (Math.hypot(dx, dy) < 10) return;
+    }
+    on(e);
+  });
+  window.addEventListener("mouseup", () => {
+    mouseHeldOnKeys = false;
+    off();
+  });
 }
 function updateKeysUI() {
   const active = new Set([...engine.active.keys()]);
@@ -1817,13 +2044,14 @@ function updateKeysUI() {
 // 走 Rust midir 原生层(WebView2 Web MIDI 实例不稳定):invoke 枚举/连接,event 收消息
 
 let midiOutPort: number | null = null;   // 输出端口索引(选择器 value)
-let midiOctave = 0;   // MIDI 键盘八度偏移(CC14/15 调节)
+// MIDI 输入按住的音符:原始键号 → 移调后键号(八度变化时保证 noteOff 对准,不卡音)
+const midiHeld = new Map<number, number>();
 
-// MIDI CC 控制:旋钮/调制轮(CC1/74/91)→ 混响;CC14/15 → 八度
+// MIDI CC 控制:八度键(CC14/15,部分键盘 CC26/27)→ 全局八度(与界面/PC 键盘同步);旋钮/调制轮(CC1/74/91)→ 混响
 function handleMidiCC(cc: number, val: number) {
-  if (cc === 14 || cc === 15) {
-    midiOctave = Math.min(2, Math.max(-2, midiOctave + (cc === 15 ? 1 : -1)));
-    toast(`MIDI 八度: ${noteName(48 + midiOctave * 12)}`);
+  if (cc === 14 || cc === 15 || cc === 26 || cc === 27) {
+    shiftOctave(cc === 15 || cc === 27 ? 1 : -1);
+    toast(`MIDI 八度: ${noteName(48 + octaveShift * 12)}`);
     return;
   }
   if (cc === 1 || cc === 74 || cc === 91) {
@@ -1835,20 +2063,68 @@ function handleMidiCC(cc: number, val: number) {
   }
 }
 
+// MIDI 程序变更(0xC0)映射:0-13 = 内置音色,14+ = 用户预设(与加载预设下拉顺序一致)
+const MIDI_PROGRAM_WAVES: SynthEngine["waveType"][] = [
+  "sine", "triangle", "square", "saw", "wt", "moog",
+  "dx7", "piano", "drip", "acc", "clar", "harp", "guzheng", "custom",
+];
+function handleMidiProgramChange(program: number) {
+  let name = "";
+  if (program < MIDI_PROGRAM_WAVES.length) {
+    const t = MIDI_PROGRAM_WAVES[program];
+    setPreset(t);
+    name = t;
+  } else {
+    // 用户预设:program-14 对应 localStorage 预设列表下标
+    const idx = program - MIDI_PROGRAM_WAVES.length;
+    let list: { name: string; params: ReturnType<typeof captureParams> }[] = [];
+    try { list = JSON.parse(localStorage.getItem(PRESET_KEY) || "[]"); } catch { list = []; }
+    const p = list[idx];
+    if (!p) { toast("MIDI 程序 " + program + ":无对应预设"); return; }
+    applyParams(p.params);
+    name = p.name;
+  }
+  toast("MIDI 程序变更 → " + name);
+}
+
 async function initMidi() {
   const st = $id("midi-status");
   try {
     const [inputs, outputs] = await invoke<[string[], string[]]>("midi_list_devices");
-    st.textContent = inputs.length ? `MIDI: 已连接(${inputs.length} 输入)` : "MIDI: 就绪(无输入)";
+    st.textContent = inputs.length ? `MIDI: 就绪(${inputs.length} 输入)` : "MIDI: 就绪(无输入)";
     st.classList.toggle("on", inputs.length > 0);
 
+    // 输入端口选择器(音源机/外接键盘场景:选哪个口监听)
+    const inSel = $id("midi-in") as HTMLSelectElement;
+    inSel.innerHTML = '<option value="">无(仅电脑键盘)</option>';
+    inputs.forEach((name, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = name;
+      inSel.appendChild(opt);
+    });
     // 自动连接第一个输入端
     if (inputs.length > 0) {
+      inSel.value = "0";
       await invoke("midi_start_input", { port: 0 });
       st.textContent = `MIDI: 已连接(${inputs[0]})`;
       st.classList.add("on");
       toast("MIDI 输入: " + inputs[0]);
     }
+    inSel.addEventListener("change", async () => {
+      try { await invoke("midi_stop_input"); } catch { /* 未连接 */ }
+      const v = inSel.value;
+      if (v === "") {
+        st.textContent = "MIDI: 未连接";
+        st.classList.remove("on");
+        toast("MIDI 输入已关闭");
+        return;
+      }
+      const name = await invoke<string>("midi_start_input", { port: Number(v) }).catch(() => "");
+      st.textContent = name ? `MIDI: 已连接(${name})` : "MIDI: 连接失败";
+      st.classList.toggle("on", !!name);
+      toast(name ? "MIDI 输入: " + name : "MIDI 输入连接失败");
+    });
 
     // 输出下拉
     const sel = $id("midi-out") as HTMLSelectElement;
@@ -1876,12 +2152,17 @@ async function initMidi() {
         // 诊断:状态栏显示 MIDI 输入音符与力度(音量太小时可在此发现)
         const st2 = $id("trans-status");
         if (st2 && !transPlaying) {
-          st2.textContent = `MIDI 输入: ${noteName(d1 + midiOctave * 12)} 力度 ${d2}`;
+          st2.textContent = `MIDI 输入: ${noteName(d1 + octaveShift * 12)} 力度 ${d2}`;
         }
-        noteOn(d1 + midiOctave * 12, d2 / 127);   // 力度 0-127 → 0-1
+        midiHeld.set(d1, d1 + octaveShift * 12);   // 记录移调后键号,八度变化不卡音
+        noteOn(d1 + octaveShift * 12, d2 / 127);   // 力度 0-127 → 0-1
       }
-      else if (type === 0x80 || (type === 0x90 && d2 === 0)) noteOff(d1 + midiOctave * 12);
+      else if (type === 0x80 || (type === 0x90 && d2 === 0)) {
+        const m = midiHeld.get(d1);
+        if (m !== undefined) { midiHeld.delete(d1); noteOff(m); }
+      }
       else if (type === 0xb0) handleMidiCC(d1, d2);   // 控制器消息
+      else if (type === 0xc0) handleMidiProgramChange(d1);   // 程序变更(音色切换)
     });
   } catch (err) {
     console.error("MIDI init failed:", err);
@@ -2296,6 +2577,130 @@ bindSlider("pn-noise", (v) => { engine.pianoNoiseLevel = v / 100; }, (v) => v + 
 bindSlider("pn-bright", (v) => { engine.pianoBright = v / 100; }, (v) => (v / 100).toFixed(1) + "x");
 refreshPianoUI();
 
+// 渐变(波表形态)控件 ↔ 引擎
+// 渐变组:每组 8 个槽位的有序波形,形态位置在组内连续渐变;支持多组
+interface WtBank { name: string; slots: SynthEngine["waveType"][]; }
+const WT_KEY = "commix-wt-banks";
+const DEFAULT_WT_BANKS: WtBank[] = [
+  { name: "渐变 1", slots: ["sine", "triangle", "square", "saw", "dx7", "harp", "guzheng", "custom"] },
+  { name: "渐变 2", slots: ["dx7", "harp", "guzheng", "piano", "drip", "acc", "clar", "custom"] },
+  { name: "渐变 3", slots: ["saw", "square", "triangle", "sine", "custom", "harp", "guzheng", "dx7"] },
+  { name: "渐变 4", slots: ["sine", "harp", "guzheng", "custom", "triangle", "clar", "acc", "dx7"] },
+];
+function wtLoadBanks(): WtBank[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WT_KEY) || "");
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw.map((b: WtBank, i: number) => ({
+        name: typeof b.name === "string" && b.name ? b.name : "渐变 " + (i + 1),
+        slots: Array.isArray(b.slots) && b.slots.length === 8
+          ? b.slots : [...DEFAULT_WT_BANKS[i % DEFAULT_WT_BANKS.length].slots],
+      }));
+    }
+  } catch { /* 数据损坏则用默认 */ }
+  return DEFAULT_WT_BANKS.map((b) => ({ name: b.name, slots: [...b.slots] }));
+}
+let wtBanks = wtLoadBanks();
+let wtBankIdx = 0;
+engine.wtSlots = [...wtBanks[0].slots];
+engine.markWtDirty();
+function wtSaveBanks() { localStorage.setItem(WT_KEY, JSON.stringify(wtBanks)); }
+
+function refreshWtUI() {
+  ($id("wt-pos") as HTMLInputElement).value = String(Math.round(engine.wtPos * 100));
+  $id("wt-pos-val").textContent = Math.round(engine.wtPos * 100) + "%";
+  ($id("wt-lfo-rate") as HTMLInputElement).value = String(Math.round(engine.wtLfoRate * 100));
+  $id("wt-lfo-rate-val").textContent = engine.wtLfoRate.toFixed(1) + "Hz";
+  ($id("wt-lfo-depth") as HTMLInputElement).value = String(Math.round(engine.wtLfoDepth * 100));
+  $id("wt-lfo-depth-val").textContent = Math.round(engine.wtLfoDepth * 100) + "%";
+  $id("wave-hint").textContent = engine.waveType === "wt"
+    ? "波表模式:波形曲线 = 当前形态混合 · 竖线 = 形态位置 · 分界线 = 槽位边界"
+    : "按住拖动画波形 · 拖锚点微调 · 右键删除锚点";
+  wtLfoSync();
+}
+// 形态位置应用到所有活跃 WT 音符
+function applyWtToVoices() {
+  for (const gains of engine.wtVoiceMap.values()) engine.wtSlotWeights(engine.currentWtPos(), gains, 0, true);
+}
+// 形态 LFO 循环:rAF 驱动,实时更新活跃音符的槽位增益 + 画布预览
+let wtLfoRaf = 0;
+function wtLfoLoop() {
+  if (engine.waveType !== "wt" || engine.wtLfoDepth <= 0 || engine.wtLfoRate <= 0) { wtLfoRaf = 0; return; }
+  if (engine.wtVoiceMap.size > 0) applyWtToVoices();
+  drawWave();
+  wtLfoRaf = requestAnimationFrame(wtLfoLoop);
+}
+function wtLfoStart() { if (!wtLfoRaf) wtLfoRaf = requestAnimationFrame(wtLfoLoop); }
+function wtLfoStop() { if (wtLfoRaf) { cancelAnimationFrame(wtLfoRaf); wtLfoRaf = 0; } }
+function wtLfoSync() {
+  if (engine.waveType === "wt" && engine.wtLfoDepth > 0 && engine.wtLfoRate > 0) wtLfoStart();
+  else wtLfoStop();
+}
+bindSlider("wt-pos", (v) => { engine.wtPos = v / 100; applyWtToVoices(); drawWave(); }, (v) => v + "%");
+bindSlider("wt-lfo-rate", (v) => { engine.wtLfoRate = v / 100; wtLfoSync(); }, (v) => (v / 100).toFixed(1) + "Hz");
+bindSlider("wt-lfo-depth", (v) => { engine.wtLfoDepth = v / 100; wtLfoSync(); applyWtToVoices(); drawWave(); }, (v) => v + "%");
+
+// 渐变组管理:切换/编辑槽位 → 引擎波表重建
+function wtSetBank(i: number) {
+  wtBankIdx = Math.min(wtBanks.length - 1, Math.max(0, i));
+  engine.wtSlots = [...wtBanks[wtBankIdx].slots];
+  engine.markWtDirty();
+  refreshWtBankUI();
+  drawWave();
+}
+function refreshWtBankUI() {
+  const row = $id("wt-banks");
+  row.innerHTML = "";
+  wtBanks.forEach((b, i) => {
+    const btn = document.createElement("button");
+    btn.className = "preset-btn" + (i === wtBankIdx ? " active" : "");
+    btn.textContent = b.name;
+    btn.addEventListener("click", () => wtSetBank(i));
+    row.appendChild(btn);
+  });
+  // 槽位编辑器(8 个下拉,即时生效)
+  const grid = $id("wt-slot-grid");
+  grid.innerHTML = "";
+  engine.wtSlots.forEach((slot, i) => {
+    const cell = document.createElement("div");
+    cell.className = "sp-item";
+    const lab = document.createElement("label");
+    lab.textContent = "槽位 " + (i + 1);
+    const sel = document.createElement("select");
+    for (const opt of WT_SLOT_OPTIONS) {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = WT_SLOT_OPTION_NAMES[opt] ?? opt;
+      sel.appendChild(o);
+    }
+    sel.value = slot;
+    sel.addEventListener("change", () => {
+      wtBanks[wtBankIdx].slots[i] = sel.value as SynthEngine["waveType"];
+      engine.wtSlots = [...wtBanks[wtBankIdx].slots];
+      engine.markWtDirty();
+      wtSaveBanks();
+      drawWave();
+    });
+    cell.appendChild(lab);
+    cell.appendChild(sel);
+    grid.appendChild(cell);
+  });
+}
+$id("wt-bank-add").addEventListener("click", () => {
+  if (wtBanks.length >= 8) { toast("最多 8 组渐变"); return; }
+  wtBanks.push({ name: "渐变 " + (wtBanks.length + 1), slots: [...DEFAULT_WT_BANKS[wtBanks.length % DEFAULT_WT_BANKS.length].slots] });
+  wtSaveBanks();
+  wtSetBank(wtBanks.length - 1);
+});
+$id("wt-bank-del").addEventListener("click", () => {
+  if (wtBanks.length <= 1) { toast("至少保留 1 组渐变"); return; }
+  wtBanks.splice(wtBankIdx, 1);
+  wtSaveBanks();
+  wtSetBank(Math.min(wtBankIdx, wtBanks.length - 1));
+});
+refreshWtUI();
+refreshWtBankUI();
+
 // 把引擎当前合成器参数同步到 UI 控件
 function refreshSynthUI() {
   ($id("sp-osc-wave") as HTMLSelectElement).value = engine.oscWave;
@@ -2377,6 +2782,10 @@ function captureParams() {
     dripRatio: engine.dripRatio,
     dripTimeMs: engine.dripTimeMs,
     dripDecayMs: engine.dripDecayMs,
+    wtPos: engine.wtPos,
+    wtLfoRate: engine.wtLfoRate,
+    wtLfoDepth: engine.wtLfoDepth,
+    wtSlots: [...engine.wtSlots],
     velCurve: velAnchors.map((a) => a.y),
     velMin, velPower,
   };
@@ -2404,6 +2813,15 @@ function applyParams(p: ReturnType<typeof captureParams>) {
   engine.dripRatio = p.dripRatio;
   engine.dripTimeMs = p.dripTimeMs;
   engine.dripDecayMs = p.dripDecayMs;
+  engine.wtPos = p.wtPos ?? 0.3;
+  engine.wtLfoRate = p.wtLfoRate ?? 0;
+  engine.wtLfoDepth = p.wtLfoDepth ?? 0;
+  if (Array.isArray(p.wtSlots) && p.wtSlots.length === 8) {
+    engine.wtSlots = [...p.wtSlots];
+    engine.markWtDirty();
+    // 渐变面板同步显示预设槽位
+    if (wtBanks[wtBankIdx]) { wtBanks[wtBankIdx].slots = [...p.wtSlots]; refreshWtBankUI(); }
+  }
   if (Array.isArray(p.velCurve) && p.velCurve.length === velAnchors.length) {
     for (let i = 0; i < velAnchors.length; i++) velAnchors[i].y = p.velCurve[i];
   }
@@ -2427,6 +2845,8 @@ function applyParams(p: ReturnType<typeof captureParams>) {
   if (engine.isSynthPreset(p.waveType)) {
     if (p.waveType === "dx7") {
       $id("sp-note").textContent = "FM 音色:振荡器参数不适用";
+    } else if (p.waveType === "wt") {
+      $id("sp-note").textContent = "波表合成:渐变配置见「渐变」选项卡";
     } else if (p.waveType === "piano") {
       $id("sp-note").textContent = "PILZ1 加法合成:钢琴参数可用";
     } else if (p.waveType === "drip") {
@@ -2440,6 +2860,7 @@ function applyParams(p: ReturnType<typeof captureParams>) {
   }
   refreshPianoUI();
   refreshDripUI();
+  refreshWtUI();
   refreshPlayUI();
   (($id("volume") as HTMLInputElement).value = String(Math.round(p.volume * 100)));
   $id("volume-val").textContent = Math.round(p.volume * 100) + "%";
