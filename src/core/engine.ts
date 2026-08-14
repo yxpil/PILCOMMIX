@@ -7,22 +7,22 @@ export const MAX_VOICES = 32;
 export class SynthEngine {
   ctx: AudioContext;
   master: GainNode;
-  recorderDest: MediaStreamAudioDestinationNode;
+  recorderDest!: MediaStreamAudioDestinationNode;
   active = new Map<number, VoiceRec>();
 
   private voiceOrder: number[] = [];   // 复音 steal 队列
 
   // 混响链:master → dry(destination) + send → convolver → return → destination
-  reverbSend: GainNode;
-  reverbReturn: GainNode;
-  convolver: ConvolverNode;
+  reverbSend!: GainNode;
+  reverbReturn!: GainNode;
+  convolver!: ConvolverNode;
   // 波形显示(录音轨道用)
-  analyser: AnalyserNode;
+  analyser!: AnalyserNode;
   // 钢琴锤击噪声缓冲
-  noiseBuffer: AudioBuffer;
+  noiseBuffer!: AudioBuffer;
 
   // 音色参数
-  volume = 0.7;
+  volume = 1;   // 0dB 默认(UI 显示 dB)
   attack = 0.01; decay = 0.2; sustain = 0.7; release = 0.3;
   harmonics = 32;
   reverb = 0.25;
@@ -97,11 +97,51 @@ export class SynthEngine {
   // 失真驱动 0..1
   drive = 0;
   driveNode!: WaveShaperNode;
+  // 三频段 EQ(主效果链,±12dB)
+  eqBass = 0;
+  eqMid = 0;
+  eqTreble = 0;
   // 副振荡器
   subLevel = 0;                       // 0..1
   subWave: OscillatorType = "sine";
+  // 增益与 NoteOn 随机扰动
+  gain = 1;                           // 输出增益 0-2
+  noteJitter = 0;                     // NoteOn 随机扰动 0-1
+  // PM 硬件模拟参数(镜像,Rust 引擎实际渲染)
+  grainSizeMs = 80;
+  grainDensity = 40;
+  grainSpread = 30;
+  grainRandom = 0.3;
+  grainSizeEnd = 80;
+  grainDensityEnd = 40;
+  grainEnvMs = 800;
+  grainEnvExp = 0;
+  dxPm = false;                       // PM 相位调制
+  dxLutSize = 4096;                      // 4096 正弦查表
+  dxQuantBits = 0;                    // 16bit 定点截断
+  dxDac = false;                      // DAC 输出量化
+  dxBits = 12;                        // DAC 量化位数 8/12/16
+  dxAa = false;                       // 抗混叠平滑
+  dxAlgorithm = 1;                    // 1-7 算法(7=六载波并行)
+  dxFeedback = 5;                     // OP6 反馈 0-7
+  dxRatios = [1, 2.73, 1.41, 3, 2.01, 1];
+  dxTls = [82, 52, 56, 64, 68, 72];
+  dxDets = [0, 0, 0, 0, 0, 0];
+  dxEgs = new Array<number>(48).fill(99);
 
-  constructor() {
+  // 分身模式:传入父引擎时共享其 AudioContext 与主效果链(发声汇入父引擎 driveNode),
+  // 只建独立通道总线 + 独立音色/复音状态 —— 多轨 MIDI 播放时每通道一个分身,最终合并到主输出
+  constructor(parent?: SynthEngine) {
+    if (parent) {
+      this.ctx = parent.ctx;
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 1;
+      this.master.connect(parent.driveNode);   // 汇入主效果链输入(合并输出)
+      this.noiseBuffer = parent.noiseBuffer;
+      this.wtPresetResolver = parent.wtPresetResolver;
+      this.wtLfoT0 = this.ctx.currentTime;
+      return;
+    }
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     this.master = this.ctx.createGain();
     this.master.gain.value = this.volume;
@@ -167,12 +207,14 @@ export class SynthEngine {
 
   setReverb(v: number) {
     this.reverb = v;
+    if (!this.reverbSend) return;   // 通道分身无独立混响,共享主引擎效果链
     // 发送量 = 混响量 ^ 1.6(非线性让低值更敏感)
     this.reverbSend.gain.setTargetAtTime(Math.pow(v, 1.6) * 0.9, this.ctx.currentTime, 0.05);
   }
 
   setDelay(timeMs: number, feedback: number, mix: number) {
     this.delayTimeMs = timeMs; this.delayFeedback = feedback; this.delayMix = mix;
+    if (!this.delayNode) return;    // 通道分身无独立延迟
     const t = this.ctx.currentTime;
     this.delayNode.delayTime.setTargetAtTime(timeMs / 1000, t, 0.03);
     this.delayFeedbackGain.gain.setTargetAtTime(feedback, t, 0.03);
@@ -181,6 +223,7 @@ export class SynthEngine {
 
   setDrive(v: number) {
     this.drive = Math.min(1, Math.max(0, v));
+    if (!this.driveNode) return;    // 通道分身无独立失真
     this.driveNode.curve = makeDriveCurve(this.drive);
   }
 
@@ -1059,6 +1102,52 @@ export class SynthEngine {
 
   allOff() {
     for (const n of [...this.active.keys()]) this.noteOff(n, true);
+  }
+
+  // ============ 引擎分身(多轨 MIDI 播放) ============
+  // 复制一份与主引擎共享 AudioContext + 主效果链的独立引擎:独立音色参数/复音/弯音/踏板/波表缓存,
+  // 各通道最终全部汇入主效果链合并为一个输出
+  fork(): SynthEngine {
+    const ch = new SynthEngine(this);
+    ch.copyParams(this);
+    ch.volume = 1;          // 通道总线不做二次音量,总音量由主引擎掌控
+    ch.monoMode = false;    // 多轨播放各通道独立复音
+    ch.sustainPedal = false;
+    ch.bendCents = 0;
+    return ch;
+  }
+
+  // 通道分身用完后释放(不关闭共享 AudioContext)
+  dispose() {
+    this.allOff();
+    try { this.master.disconnect(); } catch { /* 已断开 */ }
+  }
+
+  // 复制音色参数(不含主效果链:混响/延迟/驱动由主引擎统一掌控)
+  private copyParams(from: SynthEngine) {
+    this.volume = from.volume; this.attack = from.attack; this.decay = from.decay;
+    this.sustain = from.sustain; this.release = from.release; this.harmonics = from.harmonics;
+    this.waveType = from.waveType; this.customWave = from.customWave;
+    this.oscWave = from.oscWave; this.oscCount = from.oscCount; this.detuneCents = from.detuneCents;
+    this.filterKind = from.filterKind; this.cutoffHz = from.cutoffHz; this.resonanceQ = from.resonanceQ;
+    this.cutoffEnvHz = from.cutoffEnvHz; this.cutoffEnvMs = from.cutoffEnvMs;
+    this.monoMode = from.monoMode; this.pan = from.pan;
+    this.vibratoRate = from.vibratoRate; this.vibratoDepth = from.vibratoDepth;
+    this.pianoDecayScale = from.pianoDecayScale; this.pianoDetuneCents = from.pianoDetuneCents;
+    this.pianoNoiseLevel = from.pianoNoiseLevel; this.pianoBright = from.pianoBright;
+    this.dripRatio = from.dripRatio; this.dripTimeMs = from.dripTimeMs; this.dripDecayMs = from.dripDecayMs;
+    this.wtPos = from.wtPos; this.wtLfoRate = from.wtLfoRate; this.wtLfoDepth = from.wtLfoDepth;
+    this.wtSlots = [...from.wtSlots];
+    this.portamentoMs = from.portamentoMs;
+    this.filterEnvHz = from.filterEnvHz; this.filterEnvA = from.filterEnvA;
+    this.filterEnvD = from.filterEnvD; this.filterEnvS = from.filterEnvS; this.filterEnvR = from.filterEnvR;
+    this.modLfoRate = from.modLfoRate; this.modLfoDepth = from.modLfoDepth;
+    this.modLfoWave = from.modLfoWave; this.modLfoTarget = from.modLfoTarget;
+    this.keyTrack = from.keyTrack; this.velTrack = from.velTrack;
+    this.subLevel = from.subLevel; this.subWave = from.subWave;
+    this.wtPresetResolver = from.wtPresetResolver;
+    this.wtLfoT0 = this.ctx.currentTime;
+    this.wtBank = null; this.wtBankDirty = true;   // 波表缓存独立重建
   }
 }
 

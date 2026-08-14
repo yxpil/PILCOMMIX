@@ -2,7 +2,7 @@
 export type WaveType = "sine" | "square" | "saw" | "triangle" | "custom"
   | "moog" | "dx7" | "piano" | "drip"
   | "acc" | "clar" | "harp" | "guzheng"
-  | "wt";
+  | "wt" | "noise" | "grain";
 export const PIANO_HARMONICS: [number, number, number][] = [
   // [泛音序数, 相对幅度, 衰减时间(s)]
   [1, 1.0, 3.2], [2, 0.75, 2.1], [3, 0.55, 1.4], [4, 0.4, 1.0],
@@ -28,20 +28,32 @@ export const WT_SLOT_NAMES: Record<string, string> = {
   dx7: "FM", harp: "竖琴", guzheng: "古筝", custom: "自定义",
 };
 // 渐变槽位可选波形(下拉用)
-export const WT_SLOT_OPTIONS: WaveType[] = ["sine", "triangle", "square", "saw", "moog", "dx7", "piano", "drip", "acc", "clar", "harp", "guzheng", "custom"];
+export const WT_SLOT_OPTIONS: WaveType[] = ["sine", "triangle", "square", "saw", "moog", "dx7", "piano", "drip", "acc", "clar", "harp", "guzheng", "grain", "custom"];
 export const WT_SLOT_OPTION_NAMES: Record<string, string> = {
   sine: "正弦", triangle: "三角", square: "方波", saw: "锯齿", dx7: "FM",
   piano: "钢琴", drip: "水滴", acc: "手风琴", clar: "单簧管", harp: "竖琴",
-  guzheng: "古筝", custom: "自定义",
+  guzheng: "古筝", grain: "粒子", custom: "自定义",
 };
 
-// DX7 是 FM 合成器:载波 + 调制算子,音色由 FM 边带和调制指数包络决定。
+// PM 合成:载波 + 调制算子,音色由相位调制边带和调制指数包络决定。
 export function dx7FmWave(p: number): number {
   return 0.6 * Math.sin(2 * Math.PI * p + 3 * Math.sin(2 * Math.PI * p))
        + 0.4 * Math.sin(2 * Math.PI * p + 2 * Math.sin(4 * Math.PI * p));
 }
 
 export function presetWaveAt(type: string, p: number): number {
+  if (type === "grain") {
+    // 粒子纹理预览:确定性伪随机短脉冲叠加(与 Rust 表一致)
+    let st = 0x9E3779B9 >>> 0;
+    let rnd = () => { st = (Math.imul(st, 1664525) + 1013904223) >>> 0; return (st >>> 8) / 16777216; };
+    let v = 0;
+    for (let k = 0; k < 64; k++) {
+      const ph = rnd(), w = 0.008 + rnd() * 0.04, amp = 0.25 + rnd() * 0.75;
+      const d = (p - ph) % 1 < 0 ? (p - ph) % 1 + 1 : (p - ph) % 1;
+      if (d < w) v += amp * Math.sin(d / w * Math.PI * 0.5);
+    }
+    return v * 0.5;
+  }
   if (type === "dx7") return dx7FmWave(p);
   if (type === "drip") {
     // 水滴预览:起始高频快速滑向基频的正弦(静态近似)
@@ -111,7 +123,7 @@ export function wtSlotFnAt(slot: string, p: number): number {
     case "triangle": return p < 0.5 ? 4 * p - 1 : 3 - 4 * p;
     case "square": return p < 0.5 ? 1 : -1;
     case "saw": return 2 * p - 1;
-    default: return presetWaveAt(slot, p);   // dx7/harp/guzheng
+    default: return presetWaveAt(slot, p);   // PM/竖琴/古筝
   }
 }
 

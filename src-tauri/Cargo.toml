@@ -1,6 +1,6 @@
 [package]
 name = "commix"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 
 [build-dependencies]
@@ -12,6 +12,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.15"
 midir = "0.10"
+cpal = "0.15"
+hound = "3"
 
 [features]
 default = ["custom-protocol"]

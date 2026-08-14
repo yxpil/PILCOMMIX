@@ -1,5 +1,6 @@
 // 渐变(波表形态)面板:渐变组管理、槽位编辑、形态 LFO
 import { engine, wtBanks, wtBankIdx, wtSaveBanks, DEFAULT_WT_BANKS, setWtBankIdx, PRESET_KEY } from "../core/store";
+import { ra } from "../core/rust-audio";
 import { WT_SLOT_OPTIONS, WT_SLOT_OPTION_NAMES } from "../core/wave";
 import { drawWave, setWtDrawing, wtDrawing } from "./wave-editor";
 import { bindSlider } from "./panel";
@@ -20,11 +21,10 @@ export function refreshWtUI() {
 export function applyWtToVoices() {
   for (const gains of engine.wtVoiceMap.values()) engine.wtSlotWeights(engine.currentWtPos(), gains, 0, true);
 }
-// 形态 LFO 循环:rAF 驱动,实时更新活跃音符的槽位增益 + 画布预览
+// 形态 LFO 循环:仅画布预览(形态 LFO 发声在 Rust 音频线程采样级计算)
 export let wtLfoRaf = 0;
 export function wtLfoLoop() {
   if (engine.waveType !== "wt" || engine.wtLfoDepth <= 0 || engine.wtLfoRate <= 0) { wtLfoRaf = 0; return; }
-  if (engine.wtVoiceMap.size > 0) applyWtToVoices();
   drawWave();
   wtLfoRaf = requestAnimationFrame(wtLfoLoop);
 }
@@ -34,14 +34,15 @@ export function wtLfoSync() {
   if (engine.waveType === "wt" && engine.wtLfoDepth > 0 && engine.wtLfoRate > 0) wtLfoStart();
   else wtLfoStop();
 }
-bindSlider("wt-pos", (v) => { engine.wtPos = v / 100; applyWtToVoices(); drawWave(); }, (v) => v + "%");
-bindSlider("wt-lfo-rate", (v) => { engine.wtLfoRate = v / 100; wtLfoSync(); }, (v) => (v / 100).toFixed(1) + "Hz");
-bindSlider("wt-lfo-depth", (v) => { engine.wtLfoDepth = v / 100; wtLfoSync(); applyWtToVoices(); drawWave(); }, (v) => v + "%");
+bindSlider("wt-pos", (v) => { engine.wtPos = v / 100; ra.setParam(0, "wt_pos", v / 100); drawWave(); }, (v) => v + "%");
+bindSlider("wt-lfo-rate", (v) => { engine.wtLfoRate = v / 100; ra.setParam(0, "wt_lfo_rate", v / 100); wtLfoSync(); }, (v) => (v / 100).toFixed(1) + "Hz");
+bindSlider("wt-lfo-depth", (v) => { engine.wtLfoDepth = v / 100; ra.setParam(0, "wt_lfo_depth", v / 100); wtLfoSync(); drawWave(); }, (v) => v + "%");
 
 // 渐变组管理:切换/编辑槽位 → 引擎波表重建
 export function wtSetBank(i: number) {
   setWtBankIdx(Math.min(wtBanks.length - 1, Math.max(0, i)));
   engine.wtSlots = [...wtBanks[wtBankIdx].slots];
+  ra.setWtSlots(0, engine.wtSlots);
   engine.markWtDirty();
   refreshWtBankUI();
   drawWave();
@@ -99,6 +100,8 @@ export function refreshWtBankUI() {
     sel.addEventListener("change", () => {
       wtBanks[wtBankIdx].slots[i] = sel.value;
       engine.wtSlots = [...wtBanks[wtBankIdx].slots];
+      ra.setWtSlots(0, engine.wtSlots);
+  ra.setWtSlots(0, engine.wtSlots);
       engine.markWtDirty();
       wtSaveBanks();
       drawWave();
@@ -119,6 +122,7 @@ $id("wt-slot-plus").addEventListener("click", () => {
   if (cur.slots.length >= 16) { toast("最多 16 个槽位"); return; }
   cur.slots.push(cur.slots[cur.slots.length - 1] ?? "sine");
   engine.wtSlots = [...cur.slots];
+  ra.setWtSlots(0, engine.wtSlots);
   engine.markWtDirty();
   wtSaveBanks();
   refreshWtBankUI();
@@ -129,6 +133,7 @@ $id("wt-slot-minus").addEventListener("click", () => {
   if (cur.slots.length <= 2) { toast("至少 2 个槽位(两音色交替)"); return; }
   cur.slots.pop();
   engine.wtSlots = [...cur.slots];
+  ra.setWtSlots(0, engine.wtSlots);
   engine.markWtDirty();
   wtSaveBanks();
   refreshWtBankUI();

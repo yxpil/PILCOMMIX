@@ -1,5 +1,6 @@
 // 力度曲线编辑器
-import { velAnchors, velMin, velPower, engine, applyVelocityCurve, setVelMin, setVelPower } from "../core/store";
+import { velAnchors, velMin, velPower, applyVelocityCurve, setVelMin, setVelPower } from "../core/store";
+import { ra } from "../core/rust-audio";
 import { $id } from "./dom";
 export let velDragging: number | null = null;
 export const VEL_CURVES: Record<string, number[]> = {
@@ -20,6 +21,9 @@ export function resizeVelCanvas() {
   velCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+export function pushVelCurve() {
+  ra.setVelCurve(velAnchors.map((a) => ({ x: a.x, y: a.y })), velMin, velPower);
+}
 export function drawVelCurve() {
   const cw = velCanvas.width / (window.devicePixelRatio || 1);
   const ch = velCanvas.height / (window.devicePixelRatio || 1);
@@ -88,6 +92,7 @@ window.addEventListener("mousemove", (e) => {
   if (velDragging === 0) velAnchors[0].y = 0;
   if (velDragging === velAnchors.length - 1) velAnchors[velAnchors.length - 1].y = 1;
   drawVelCurve();
+  pushVelCurve();
 });
 window.addEventListener("mouseup", () => { velDragging = null; });
 window.addEventListener("resize", () => { resizeVelCanvas(); drawVelCurve(); });
@@ -101,24 +106,27 @@ $id("vel-presets").querySelectorAll(".preset-btn").forEach((b) => {
     if (ys) {
       for (let i = 0; i < velAnchors.length; i++) velAnchors[i].y = ys[i];
       drawVelCurve();
+      pushVelCurve();
     }
-    engine.reload();   // 切换后重载音频引擎(消除静音)
   });
 });
 resizeVelCanvas();
 drawVelCurve();
+pushVelCurve();
 
 // 响度下限滑块
 $id("vel-min").addEventListener("input", () => {
   setVelMin(Number(($id("vel-min") as HTMLInputElement).value) / 100);
   $id("vel-min-val").textContent = Math.round(velMin * 100) + "%";
   drawVelCurve();
+  pushVelCurve();
 });
 // 衰减强度滑块
 $id("vel-power").addEventListener("input", () => {
   setVelPower(Number(($id("vel-power") as HTMLInputElement).value) / 100);
   $id("vel-power-val").textContent = velPower.toFixed(1) + "x";
   drawVelCurve();
+  pushVelCurve();
 });
 
 // ============ 转录(SMF 文件 / 录音流程 → 简谱) ============

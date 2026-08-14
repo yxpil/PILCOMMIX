@@ -9,7 +9,7 @@ export function readVLQ(bytes: Uint8Array, pos: { i: number }): number {
   } while (b & 0x80);
   return v;
 }
-export function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrks: number; usPerQuarter: number; beatsPerBar: number; programChanges: { track: number; tick: number; program: number }[] } {
+export function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: number; ntrks: number; usPerQuarter: number; beatsPerBar: number; programChanges: { track: number; tick: number; program: number; ch: number }[] } {
   const pos = { i: 0 };
   const rd = (n: number) => {
     let v = 0;
@@ -27,7 +27,7 @@ export function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: numbe
   let beatsPerBar = 4;         // 默认 4/4
 
   const rawEvents: { track: number; tick: number; ch: number; note: number; vel: number; on: boolean }[] = [];
-  const programChanges: { track: number; tick: number; program: number }[] = [];
+  const programChanges: { track: number; tick: number; program: number; ch: number }[] = [];
   for (let tr = 0; tr < ntrks; tr++) {
     if (rd(4) !== 0x4d54726b) throw new Error("轨道头 MTrk 缺失");
     const len = rd(4);
@@ -62,7 +62,7 @@ export function parseSmf(bytes: Uint8Array): { notes: SmfNote[]; division: numbe
       }
       const kind = status & 0xf0;
       const ch = status & 0x0f;
-      if (kind === 0xc0) { programChanges.push({ track: tr, tick, program: bytes[pos.i++] }); continue; }   // 程序变更(播放时切音色)
+      if (kind === 0xc0) { programChanges.push({ track: tr, tick, program: bytes[pos.i++], ch }); continue; }   // 程序变更(播放时切该通道音色)
       if (kind === 0xd0) { pos.i += 1; continue; }   // 通道压力
       const d1 = bytes[pos.i++];
       const d2 = bytes[pos.i++];

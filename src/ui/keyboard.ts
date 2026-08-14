@@ -1,6 +1,8 @@
-// 琴键 UI + 键盘/鼠标/MIDI 统一演奏调度
+// 琴键 UI + 键盘/鼠标/MIDI 统一演奏调度(发声走 Rust 引擎)
 import { invoke } from "@tauri-apps/api/core";
-import { engine, midiRec, midiOutPort, octaveShift, applyVelocityCurve, midiHeld, transPlaying, playNotes, heldNotes, setOctaveShift } from "../core/store";
+import { midiRec, midiOutPort, octaveShift, midiHeld, transPlaying, playNotes, heldNotes, setOctaveShift } from "../core/store";
+import { ra } from "../core/rust-audio";
+import { syncArp } from "./arpeggio";
 import { noteName, KEYMAP } from "../core/notes";
 import { $id } from "./dom";
 export const heldKeys = new Map<string, number>(); // code → midi
@@ -31,7 +33,7 @@ window.addEventListener("blur", () => {
   mouseKeys.clear();
   mouseHeldOnKeys = false;
   midiHeld.clear();
-  engine.allOff();
+  ra.allOff(0);
   updateKeysUI();
 });
 
@@ -46,24 +48,25 @@ export function ledBlink() {
 }
 
 export function noteOn(midi: number, velocity = 1) {
-  const v = applyVelocityCurve(velocity);   // 力度曲线映射
   heldNotes.add(midi);
-  engine.noteOn(midi, v);
+  ra.noteOn(0, midi, velocity);   // 力度曲线在 Rust 统一应用
   ledBlink();
   if (midiOutPort !== null) {
-    invoke("midi_send", { port: midiOutPort, data: [0x90, midi, Math.round(v * 127)] }).catch(() => {});
+    invoke("midi_send", { port: midiOutPort, data: [0x90, midi, Math.round(velocity * 127)] }).catch(() => {});
   }
-  midiRec.onNote(midi, true, v);
+  midiRec.onNote(midi, true, velocity);
   updateKeysUI();
+  syncArp();
 }
 export function noteOff(midi: number) {
   heldNotes.delete(midi);
-  engine.noteOff(midi);
+  ra.noteOff(0, midi);
   if (midiOutPort !== null) {
     invoke("midi_send", { port: midiOutPort, data: [0x80, midi, 0] }).catch(() => {});
   }
   midiRec.onNote(midi, false);
   updateKeysUI();
+  syncArp();
 }
 
 // ============ 琴键 UI ============
@@ -155,9 +158,28 @@ export function bindKey(el: HTMLElement, midi: number) {
   });
 }
 export function updateKeysUI() {
-  const active = new Set([...engine.active.keys()]);
-  // 播放期间高亮的琴键也计入
+  // 高亮来源:键盘/鼠标按住的音符 + 播放中的音符 + MIDI 输入(UI 状态,发声在 Rust)
+  const active = new Set([...heldNotes]);
+  for (const n of playNotes) active.add(n);
+  for (const m of midiHeld.values()) active.add(m);
   if (transPlaying) for (const n of playNotes) active.add(n);
+  // 显示域跟随:活动音符越出显示区(距边缘 2 键内)时自动平移,弹到哪看到哪
+  if (active.size > 0) {
+    const low = LOW_NOTE + octaveShift * 12;
+    const high = HIGH_NOTE + octaveShift * 12;
+    const srt = [...active].sort((a, b) => a - b);
+    const mn = srt[0], mx = srt[srt.length - 1];
+    if (mn < low + 2 || mx > high - 2) {
+      const center = (mn + mx) / 2;
+      const wantShift = Math.round((center - (LOW_NOTE + HIGH_NOTE) / 2) / 12);
+      const ns = Math.max(-4, Math.min(5, wantShift));
+      if (ns !== octaveShift) {
+        setOctaveShift(ns);
+        $id("octave-val").textContent = noteName(48 + octaveShift * 12);
+        buildKeyboard();   // 重建后 keyEls 更新,下方高亮作用于新琴键
+      }
+    }
+  }
   keyEls.forEach((el, midi) => el.classList.toggle("active", active.has(midi)));
   // 当前音符显示
   const sorted = [...active].sort((a, b) => a - b);
@@ -167,7 +189,7 @@ export function updateKeysUI() {
 // ============ MIDI 输入 ============
 // 走 Rust midir 原生层(WebView2 Web MIDI 实例不稳定):invoke 枚举/连接,event 收消息
 export function shiftOctave(d: number) {
-  setOctaveShift(Math.min(2, Math.max(-2, octaveShift + d)));
+  setOctaveShift(Math.min(5, Math.max(-4, octaveShift + d)));
   $id("octave-val").textContent = noteName(48 + octaveShift * 12);
   buildKeyboard();   // 琴键 UI 整体平移跟随
   updateKeysUI();
@@ -177,12 +199,15 @@ $id("oct-down").addEventListener("click", () => shiftOctave(-1));
 $id("octave-val").textContent = noteName(48);
 
 // 虚拟按键:与键盘输入完全一致的播放路径(跳过力度曲线,用 MIDI 原始力度)
-export function playNoteOn(midi: number, vel: number) {
-  engine.noteOn(midi, vel);
+// ch 可选:多轨播放时指定通道引擎分身(发声走 Rust);所有通道都计入琴键高亮
+export function playNoteOn(midi: number, vel: number, ch = 0) {
+  ra.noteOn(ch, midi, vel);
+  playNotes.add(midi);
   ledBlink();
   updateKeysUI();
 }
-export function playNoteOff(midi: number) {
-  engine.noteOff(midi);
+export function playNoteOff(midi: number, ch = 0) {
+  ra.noteOff(ch, midi);
+  if (ch !== 0) playNotes.delete(midi);
   updateKeysUI();
 }

@@ -2,12 +2,13 @@
 // 引擎与纯逻辑在 core/,各面板在 ui/,本文件只做组装
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { engine, applyWaveToEngine } from "./core/store";
+import { applyWaveToEngine } from "./core/store";
+import { ra } from "./core/rust-audio";
 import { $id } from "./ui/dom";
 import { resizeCanvas, drawWave } from "./ui/wave-editor";
 import { buildKeyboard } from "./ui/keyboard";
 import { initMidi } from "./ui/midi";
-import { seedBuiltinPresets } from "./ui/presets";
+import { seedBuiltinPresets, syncMainToRust } from "./ui/presets";
 // UI 模块(导入即完成事件接线)
 import "./ui/wave-editor";
 import "./ui/velocity";
@@ -20,6 +21,11 @@ import "./ui/scope";
 import "./ui/metro";
 import "./ui/transcribe";
 import "./ui/record";
+import "./ui/dx-panel";
+import "./ui/smart";
+import "./ui/map-panel";
+import "./ui/cc-panel";
+import "./ui/midi-test";
 import "./ui/arpeggio";
 import "./ui/updater";
 
@@ -66,7 +72,28 @@ resizeCanvas();
 buildKeyboard();
 drawWave();
 applyWaveToEngine();
+syncMainToRust();        // 把当前参数灌入 Rust 引擎(0 通道)
+ra.audioStart().catch((e) => console.error("音频启动失败:", e));   // cpal 输出流
 initMidi();
 
-// 首次交互解锁 AudioContext
-document.addEventListener("pointerdown", () => engine.resume(), { once: false });
+// ============ 音频健康巡检(待机/睡眠唤醒自动恢复) ============
+// 系统睡眠后 cpal 音频流可能失效(回调停止),采样时钟停滞。
+// 每 5s 检查一次:连续 2 次(~10s)时钟未推进 → 重建音频流。
+let lastClock = -1;
+let stallCount = 0;
+setInterval(async () => {
+  try {
+    const c = await ra.audioHealth();
+    if (c === lastClock) {
+      stallCount++;
+      if (stallCount >= 2) {
+        stallCount = 0;
+        console.warn("音频时钟停滞,重建音频流(待机唤醒自动恢复)");
+        await ra.audioRestart();
+      }
+    } else {
+      stallCount = 0;
+    }
+    lastClock = c;
+  } catch { /* invoke 未就绪时忽略 */ }
+}, 5000);

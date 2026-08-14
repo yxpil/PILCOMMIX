@@ -1,11 +1,13 @@
-// 转录:SMF 播放(虚拟按键)、简谱渲染、录音转录
+// 转录:SMF 播放(Rust 采样级调度)、简谱渲染、录音转录
 import { invoke } from "@tauri-apps/api/core";
-import { engine, transState, midiRec, transPlaying, playNotes, setTransPlaying } from "../core/store";
+import { listen } from "@tauri-apps/api/event";
+import { transState, midiRec, transPlaying, playNotes, setTransPlaying, captureParams } from "../core/store";
 import { parseSmf } from "../core/smf";
 import type { SmfNote } from "../core/smf";
 import { midiToJianpu, jpDuration, velLabel } from "../core/notes";
-import { playNoteOn, playNoteOff, updateKeysUI } from "./keyboard";
-import { handleMidiProgramChange } from "./presets";
+import { updateKeysUI, ledBlink } from "./keyboard";
+import { applyProgramToChannel, setAutoMatch, autoMatchEnabled } from "./presets";
+import { ra, bytesToBase64 } from "../core/rust-audio";
 import { $id, toast } from "./dom";
 export function renderTranscription() {
   const el = $id("trans-output");
@@ -112,11 +114,13 @@ $id("btn-trans-open").addEventListener("click", async () => {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const parsed = parseSmf(bytes);
     transState.smf = parsed;
+    transState.smfBytes = bytes;   // 播放走 Rust(采样级),保留原始字节
     transState.fileName = name;
     transState.notes = [];
     const bpm = Math.round(60000000 / parsed.usPerQuarter);
+    const nCh = new Set([...parsed.notes.map((n) => n.ch), ...parsed.programChanges.map((p) => p.ch)]).size;
     $id("trans-status").textContent =
-      `已加载 ${name} · ${bpm} BPM · ${parsed.ntrks} 轨 · ${parsed.notes.length} 音符 — 点播放(虚拟按键演奏)`;
+      `已加载 ${name} · ${bpm} BPM · ${parsed.ntrks} 轨 ${nCh} 通道 · ${parsed.notes.length} 音符 — 点播放(多音色合成)`;
     $id("trans-status").classList.add("on");
     renderTranscription();   // 同时显示简谱
   } catch (err) {
@@ -126,94 +130,116 @@ $id("btn-trans-open").addEventListener("click", async () => {
   }
 });
 
-// 播放:按每轨音色用 AudioContext 时钟调度 + UI 实时跟随(琴键/LED)
+// 播放:Rust 采样级调度(每通道引擎分身,多音色),前端只做音色解析与进度显示
 export let playProgTimer = 0;   // 播放进度定时器
 export let playUiTimers: number[] = [];
+let pcTimers: number[] = [];    // 程序变更定时器
 
 export function playUiCleanup() {
   for (const t of playUiTimers) window.clearTimeout(t);
   playUiTimers = [];
+  for (const t of pcTimers) window.clearTimeout(t);
+  pcTimers = [];
   playNotes.clear();
   updateKeysUI();
 }
 
-// 虚拟按键:与键盘输入完全一致的播放路径(跳过力度曲线,用 MIDI 原始力度)
-
-$id("btn-trans-play").addEventListener("click", async () => {
-  if (!transState.smf || transState.smf.notes.length === 0) {
+// 播放:可被界面按钮 / MIDI 走带按钮(MIDI 键盘 transport)调用
+export async function transcribePlay() {
+  if (!transState.smf || !transState.smfBytes || transState.smf.notes.length === 0) {
     toast("请先打开 MIDI 文件");
     return;
   }
   if (transPlaying) return;
   const smf = transState.smf;
-  await engine.resume();
-  engine.allOff();
+  await ra.audioStart().catch(() => {});
+  ra.smfStop();
   playUiCleanup();
-  // 生成按键事件流:所有轨道音符合并,按时间排序(不做音色/轨道区分)
-  const events: { t: number; on: boolean; midi: number; vel: number; program?: number }[] = [];
-  for (const n of smf.notes) {
-    events.push({ t: n.tick, on: true, midi: n.note, vel: Math.max(1, Math.round(n.vel)) });
-    events.push({ t: n.tick + n.dur, on: false, midi: n.note, vel: 0 });
+  // 各通道继承当前主引擎参数(引擎分身语义)
+  const usedChs = new Set([...smf.notes.map((n) => n.ch), ...smf.programChanges.map((pc) => pc.ch)]);
+  const chList = [...usedChs];
+  for (const ch of chList) ra.setEngineParams(ch, captureParams());
+  // 补齐音量差距:按各通道音色实际响度探针归一(最响通道 1x,其余按比例放大,防炸基础 0.5)
+  if (($id("loudness-match") as HTMLInputElement).checked) {
+    const rms = await Promise.all(chList.map(async (ch) => {
+      try { return await invoke<number>("probe_loudness", { ch }); } catch { return 0.01; }
+    }));
+    const max = Math.max(0.005, ...rms);
+    chList.forEach((ch, i) => {
+      ra.setChannel(ch, Math.min(2.5, Math.max(0.25, max / rms[i])) * 0.5, false);
+    });
+  } else {
+    chList.forEach((ch) => ra.setChannel(ch, 0.5, false));
   }
-  // 程序变更事件:播放到该时刻自动切换音色(后续音符用新音色)
-  for (const pc of smf.programChanges) {
-    events.push({ t: pc.tick, on: false, midi: 0, vel: 0, program: pc.program });
-  }
-  events.sort((a, b) => a.t - b.t);
+  // Rust 端解析 SMF 并采样级调度(程序变更由前端按时间戳解析音色)
+  ra.smfPlay(bytesToBase64(transState.smfBytes)).catch((e: unknown) => {
+    toast("播放失败: " + String(e).slice(0, 60));
+    stopPlaybackCleanup();   // 含恢复通道音量,防止残留增益盖过主增益
+    $id("trans-status").textContent = "播放失败";
+  });
   const secPerTick = (smf.usPerQuarter / 1e6) / smf.division;
-  const endTick = events[events.length - 1].t;
-  const totalSec = endTick * secPerTick;
+  const totalSec = smf.notes.reduce((m, n) => Math.max(m, (n.tick + n.dur) * secPerTick), 0);
   const fmt = (s: number) => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(Math.floor(s % 60)).padStart(2, "0");
   const totalStr = fmt(totalSec);
-  // 启动:300ms 后开始"按键"
+  // 程序变更:按播放时间戳切音色(前端解析 → 灌通道引擎),切换时状态栏显示
+  // 勾选"只用当前音色"时忽略文件程序变更(所有通道保持当前主音色)
+  const lockTone = ($id("lock-current-tone") as HTMLInputElement).checked;
+  if (lockTone) {
+    $id("trans-status").textContent = `播放中(只用当前音色) 00:00 / ${totalStr}`;
+  } else {
+    const pcs = [...smf.programChanges].sort((a, b) => a.tick - b.tick);
+    pcTimers = pcs.map((pc) => window.setTimeout(() => {
+      const name = applyProgramToChannel(pc.ch, pc.program);
+      if (name) toast(`通道${pc.ch + 1} 切换音色:${name}`);   // 全局提示,不被状态栏刷新覆盖
+      $id("trans-status").textContent = `播放中 · 通道${pc.ch + 1} 音色:${name ?? "?"}`;
+    }, 300 + pc.tick * secPerTick * 1000));
+  }
   const startWall = performance.now() + 300;
   setTransPlaying(true);
   $id("btn-trans-play").classList.add("running");
-  $id("trans-status").textContent = `播放中 00:00 / ${totalStr}`;
-  let idx = 0;
+  $id("trans-status").textContent = lockTone
+    ? `播放中(只用当前音色) 00:00 / ${totalStr}`
+    : `播放中 00:00 / ${totalStr}`;
   const drive = () => {
     if (!transPlaying) return;
     const el = (performance.now() - startWall) / 1000;
-    // 触发所有到期按键(模拟键盘输入)
-    while (idx < events.length && events[idx].t * secPerTick <= el) {
-      const ev = events[idx++];
-      if (ev.program !== undefined) handleMidiProgramChange(ev.program);
-      else if (ev.on) playNoteOn(ev.midi, ev.vel / 127);
-      else playNoteOff(ev.midi);
-    }
     $id("trans-status").textContent = `播放中 ${fmt(Math.max(0, el))} / ${totalStr}`;
-    if (el < totalSec + 0.4) {
-      requestAnimationFrame(drive);
+    if (el < totalSec + 1.0) {
+      playUiTimers.push(window.setTimeout(drive, 200));
     } else {
-      setTransPlaying(false);
-      $id("btn-trans-play").classList.remove("running");
+      stopPlaybackCleanup();
       $id("trans-status").textContent = "播放完成";
-      engine.allOff();
-      updateKeysUI();
     }
   };
-  requestAnimationFrame(drive);
-});
+  playUiTimers.push(window.setTimeout(drive, 250));
+}
+$id("btn-trans-play").addEventListener("click", () => { transcribePlay(); });
 
-// 停止播放
-$id("btn-trans-stop").addEventListener("click", () => {
-  engine.allOff();
+// 恢复通道音量(播放结束/停止时)
+function restoreChVolumes() {
+  for (let ch = 0; ch < 16; ch++) ra.setChannel(ch, 1.0, false);
+}
+
+// 播放统一清理:停止/失败/完成共用(通道音量必须恢复,否则残留归一增益脱离主增益控制)
+function stopPlaybackCleanup() {
+  restoreChVolumes();
+  ra.smfStop();
   setTransPlaying(false);
   if (playProgTimer) { window.clearInterval(playProgTimer); playProgTimer = 0; }
   $id("btn-trans-play").classList.remove("running");
+  for (const t of pcTimers) window.clearTimeout(t);
+  pcTimers = [];
+  playNotes.clear();
+  updateKeysUI();
+}
+
+// 停止:可被界面按钮 / MIDI 走带按钮调用
+export function transcribeStop() {
+  stopPlaybackCleanup();
   $id("trans-status").textContent = "已停止";
   playUiCleanup();
-});
-
-$id("btn-trans-clear").addEventListener("click", () => {
-  engine.allOff();
-  transState.notes = [];
-  transState.smf = null;
-  transState.fileName = "";
-  $id("trans-output").textContent = "";
-  $id("trans-status").textContent = "已清空";
-  $id("trans-status").classList.remove("on");
-});
+}
+$id("btn-trans-stop").addEventListener("click", () => { transcribeStop(); });
 
 // 录音转录(录音选项卡):从录音的 MIDI 事件转简谱
 $id("btn-trans-flow").addEventListener("click", transcribeFlow);
@@ -233,3 +259,14 @@ export function transcribeFlow() {
 }
 
 // ============ 演奏调度(统一入口:键盘/鼠标/MIDI 都走这) ============
+
+// 自动随机匹配开关(无音色时程序号 → 内置音色)
+$id("auto-match").addEventListener("change", (e) => setAutoMatch((e.target as HTMLInputElement).checked));
+($id("auto-match") as HTMLInputElement).checked = autoMatchEnabled();
+
+// 琴键高亮:Rust 播放线程音符事件(与采样级调度同步);同时闪右上角输入灯
+listen<[boolean, number]>("trans-note", (e) => {
+  const [on, midi] = e.payload;
+  if (on) { playNotes.add(midi); ledBlink(); } else playNotes.delete(midi);
+  updateKeysUI();
+}).catch(() => {});

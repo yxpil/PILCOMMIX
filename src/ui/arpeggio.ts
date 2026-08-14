@@ -1,70 +1,50 @@
-// 琶音器:内置 BPM 步进,方向/跨八度,基于真实按住的音符(heldNotes)
-import { engine, heldNotes } from "../core/store";
-import { $id } from "./dom";
+// 琶音器:Rust 采样级调度(音频线程按步进注入音符事件),按住音符实时同步
+import { heldNotes } from "../core/store";
+import { ra } from "../core/rust-audio";
+import { $id, toast } from "./dom";
 
 const arp = {
   running: false,
   bpm: 120,
   direction: "up" as "up" | "down" | "updown" | "random",
   octaves: 1,
-  timer: 0,
-  step: 0,
 };
 
-function arpStep() {
-  if (!arp.running) return;
-  const notes = [...heldNotes].sort((a, b) => a - b);
-  if (notes.length === 0) {
-    arp.timer = window.setTimeout(arpStep, 60);
-    return;
-  }
-  const n = notes.length;
-  let idx: number;
-  if (arp.direction === "random") {
-    idx = Math.floor(Math.random() * n);
-  } else if (arp.direction === "down") {
-    idx = n - 1 - (arp.step % n);
-  } else if (arp.direction === "updown") {
-    const cycle = arp.step % (2 * n - 2 || 1);
-    idx = cycle < n ? cycle : 2 * n - 2 - cycle;
-  } else {
-    idx = arp.step % n;
-  }
-  const oct = Math.floor(arp.step / n) % arp.octaves;
-  const midi = notes[idx] + oct * 12;
-  const stepSec = 60 / arp.bpm / 2;   // 八分音符
-  const t = engine.ctx.currentTime;
-  engine.noteOn(midi, 0.8, t);
-  engine.noteOff(midi, true, t + stepSec * 0.6);   // 短门
-  arp.step++;
-  arp.timer = window.setTimeout(arpStep, stepSec * 1000);
+// 同步按住音符到 Rust(键盘/MIDI 按下时调用)
+export function syncArp() {
+  ra.arpSet(arp.running, [...heldNotes].sort((a, b) => a - b), arp.bpm, arp.direction, arp.octaves);
 }
 
-function arpStart() {
-  arp.running = true;
-  arp.step = 0;
-  $id("btn-arp").classList.add("running");
-  ($id("btn-arp") as HTMLElement).textContent = "停止";
-  arpStep();
+function arpToggle() {
+  arp.running = !arp.running;
+  $id("btn-arp").classList.toggle("running", arp.running);
+  ($id("btn-arp") as HTMLElement).textContent = arp.running ? "停止" : "启动";
+  syncArp();
 }
-function arpStop() {
-  arp.running = false;
-  if (arp.timer) { window.clearTimeout(arp.timer); arp.timer = 0; }
-  $id("btn-arp").classList.remove("running");
-  ($id("btn-arp") as HTMLElement).textContent = "启动";
+export function arpToggleFromMidi(cc: number) {
+  arpToggle();
+  toast(`ARP 联动(${arp.running ? "开" : "关"} · CC${cc})`);
 }
 
-$id("btn-arp").addEventListener("click", () => {
-  if (!arp.running) arpStart();
-  else arpStop();
-});
+$id("btn-arp").addEventListener("click", arpToggle);
+// 外部设置 BPM(tap tempo 联动)
+export function setArpBpm(bpm: number) {
+  arp.bpm = Math.max(40, Math.min(240, Math.round(bpm)));
+  ($id("arp-bpm") as HTMLInputElement).value = String(arp.bpm);
+  const v = $id("arp-bpm-val") as HTMLElement | null;
+  if (v) v.textContent = String(arp.bpm);
+  if (arp.running) syncArp();
+}
 $id("arp-bpm").addEventListener("input", (e) => {
   arp.bpm = Number((e.target as HTMLInputElement).value);
   $id("arp-bpm-val").textContent = String(arp.bpm);
+  if (arp.running) syncArp();
 });
 $id("arp-dir").addEventListener("change", (e) => {
   arp.direction = (e.target as HTMLSelectElement).value as typeof arp.direction;
+  if (arp.running) syncArp();
 });
 $id("arp-oct").addEventListener("change", (e) => {
   arp.octaves = Number((e.target as HTMLSelectElement).value);
+  if (arp.running) syncArp();
 });
