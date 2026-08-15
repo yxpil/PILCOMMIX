@@ -450,6 +450,7 @@ export class SynthEngine {
     this.setReverb(p.reverb);
     this.setDelay(p.delayTimeMs, p.delayFeedback, p.delayMix);
     this.setDrive(p.drive);
+    this.sanitizeParams();   // 重建后全参数数值限制(防 0/NaN/越界)
     this.modLfoShSync();
     this.resume();
   }
@@ -1148,6 +1149,66 @@ export class SynthEngine {
     this.wtPresetResolver = from.wtPresetResolver;
     this.wtLfoT0 = this.ctx.currentTime;
     this.wtBank = null; this.wtBankDirty = true;   // 波表缓存独立重建
+    this.sanitizeParams();   // JS 内核层数值限制(防 0/NaN/越界)
+  }
+
+  // 全参数数值限制:JS 内核层防线(与 Rust sanitize / rust-audio clampParam 一致)
+  // 防止预设/CC/脚本灌入 0、NaN、Inf 或越界值(如共振 0 → Biquad 除零爆音)
+  sanitizeParams() {
+    this.volume = clampNum(this.volume, 0, 2);
+    this.attack = clampNum(this.attack, 0.001, 30);
+    this.decay = clampNum(this.decay, 0.001, 30);
+    this.sustain = clampNum(this.sustain, 0, 1);
+    this.release = clampNum(this.release, 0.001, 30);
+    this.harmonics = Math.round(clampNum(this.harmonics, 1, 32));
+    this.reverb = clampNum(this.reverb, 0, 1);
+    this.oscCount = Math.round(clampNum(this.oscCount, 1, 8));
+    this.detuneCents = clampNum(this.detuneCents, 0, 1200);
+    this.cutoffHz = clampNum(this.cutoffHz, 20, 19000);
+    this.resonanceQ = clampNum(this.resonanceQ, 0.1, 30);   // 下限 0.1:Web Audio Q=0 虽不崩,但与 Rust 保持一致
+    this.cutoffEnvHz = clampNum(this.cutoffEnvHz, -19000, 19000);
+    this.cutoffEnvMs = clampNum(this.cutoffEnvMs, 0, 5000);
+    this.pan = clampNum(this.pan, -1, 1);
+    this.vibratoRate = clampNum(this.vibratoRate, 0, 100);
+    this.vibratoDepth = clampNum(this.vibratoDepth, 0, 1);
+    this.pianoDecayScale = clampNum(this.pianoDecayScale, 0.5, 2.5);
+    this.pianoDetuneCents = clampNum(this.pianoDetuneCents, 0, 100);
+    this.pianoNoiseLevel = clampNum(this.pianoNoiseLevel, 0, 1);
+    this.pianoBright = clampNum(this.pianoBright, 0.5, 2);
+    this.dripRatio = clampNum(this.dripRatio, 2, 10);
+    this.dripTimeMs = clampNum(this.dripTimeMs, 50, 500);
+    this.dripDecayMs = clampNum(this.dripDecayMs, 100, 1000);
+    this.wtPos = clampNum(this.wtPos, 0, 1);
+    this.wtLfoRate = clampNum(this.wtLfoRate, 0, 100);
+    this.wtLfoDepth = clampNum(this.wtLfoDepth, 0, 1);
+    this.portamentoMs = clampNum(this.portamentoMs, 0, 10000);
+    this.filterEnvHz = clampNum(this.filterEnvHz, -19000, 19000);
+    this.filterEnvA = clampNum(this.filterEnvA, 0.001, 30);
+    this.filterEnvD = clampNum(this.filterEnvD, 0.001, 30);
+    this.filterEnvS = clampNum(this.filterEnvS, 0, 1);
+    this.filterEnvR = clampNum(this.filterEnvR, 0.001, 30);
+    this.modLfoRate = clampNum(this.modLfoRate, 0, 100);
+    this.modLfoDepth = clampNum(this.modLfoDepth, 0, 1);
+    this.keyTrack = clampNum(this.keyTrack, 0, 1);
+    this.velTrack = clampNum(this.velTrack, 0, 1);
+    this.subLevel = clampNum(this.subLevel, 0, 1);
+    this.gain = clampNum(this.gain, 0, 2);
+    this.noteJitter = clampNum(this.noteJitter, 0, 1);
+    this.grainSizeMs = clampNum(this.grainSizeMs, 10, 500);
+    this.grainDensity = clampNum(this.grainDensity, 5, 200);
+    this.grainSpread = clampNum(this.grainSpread, 0, 200);
+    this.grainRandom = clampNum(this.grainRandom, 0, 1);
+    this.grainSizeEnd = clampNum(this.grainSizeEnd, 10, 500);
+    this.grainDensityEnd = clampNum(this.grainDensityEnd, 5, 200);
+    this.grainEnvMs = clampNum(this.grainEnvMs, 0, 3000);
+    this.grainEnvExp = clampNum(this.grainEnvExp, -3, 3);
+    this.delayTimeMs = clampNum(this.delayTimeMs, 0, 2000);
+    this.delayFeedback = clampNum(this.delayFeedback, 0, 0.95);
+    this.delayMix = clampNum(this.delayMix, 0, 1);
+    this.drive = clampNum(this.drive, 0, 1);
+    this.eqBass = clampNum(this.eqBass, -12, 12);
+    this.eqMid = clampNum(this.eqMid, -12, 12);
+    this.eqTreble = clampNum(this.eqTreble, -12, 12);
   }
 }
 
@@ -1175,4 +1236,10 @@ function makeDriveCurve(drive: number): Float32Array<ArrayBuffer> {
     curve[i] = norm > 0.001 ? Math.tanh(x * k) / norm : x;
   }
   return curve;
+}
+
+// 数值限制:NaN/Inf 回退到下限,其余 clamp 到 [lo, hi](JS 内核层通用)
+export function clampNum(v: number, lo: number, hi: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return lo;
+  return Math.min(hi, Math.max(lo, v));
 }

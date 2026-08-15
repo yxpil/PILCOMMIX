@@ -67,7 +67,7 @@ export function applyCcAction(action: string, val: number, cc: number) {
       return;
     }
     case "resonance": {
-      const res = v * 20;
+      const res = Math.max(0.1, v * 20);   // 下限 0.1:防 Rust 滤波器 Q=0 除零崩溃
       engine.resonanceQ = res;
       ra.setParam(0, "resonance_q", res);
       setSlider("sp-resonance", String(Math.round(res * 100)), res.toFixed(1));

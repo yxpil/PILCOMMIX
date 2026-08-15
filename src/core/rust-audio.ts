@@ -2,6 +2,49 @@
 // 治"TS 版本卡死":音频不再依赖 Web Audio 的 JS 节点图与 rAF 循环
 import { invoke } from "@tauri-apps/api/core";
 
+// 参数数值限制表(与 Rust 端 EngineParams::sanitize 一致):
+// JS 侧先行拦截,防止 0/NaN/Inf/越界值传入 Rust 内核导致音频流崩溃。
+// 特别地 resonance_q 下限 0.1:Rust Biquad alpha=sinw/(2Q),Q=0 除零 → NaN → 崩溃。
+const PARAM_LIMITS: Record<string, [number, number]> = {
+  volume: [0, 2],
+  attack: [0.001, 30], decay: [0.001, 30], sustain: [0, 1], release: [0.001, 30],
+  harmonics: [1, 32], osc_count: [1, 8], detune_cents: [0, 1200],
+  cutoff_hz: [20, 19000], resonance_q: [0.1, 30],
+  cutoff_env_hz: [-19000, 19000], cutoff_env_ms: [0, 5000],
+  pan: [-1, 1], vibrato_rate: [0, 100], vibrato_depth: [0, 1],
+  piano_decay_scale: [0.5, 2.5], piano_detune_cents: [0, 100],
+  piano_noise_level: [0, 1], piano_bright: [0.5, 2],
+  drip_ratio: [2, 10], drip_time_ms: [50, 500], drip_decay_ms: [100, 1000],
+  wt_pos: [0, 1], wt_lfo_rate: [0, 100], wt_lfo_depth: [0, 1],
+  portamento_ms: [0, 10000],
+  filter_env_hz: [-19000, 19000], filter_env_a: [0.001, 30], filter_env_d: [0.001, 30],
+  filter_env_s: [0, 1], filter_env_r: [0.001, 30],
+  mod_lfo_rate: [0, 100], mod_lfo_depth: [0, 1],
+  key_track: [0, 1], vel_track: [0, 1], sub_level: [0, 1],
+  gain: [0, 2], note_jitter: [0, 1],
+  grain_size_ms: [10, 500], grain_density: [5, 200], grain_spread: [0, 200],
+  grain_random: [0, 1], grain_size_end: [10, 500], grain_density_end: [5, 200],
+  grain_env_ms: [0, 3000], grain_env_exp: [-3, 3],
+};
+
+// 单值限制:NaN/Inf 回退到下限,其余 clamp 到 [lo, hi]
+function clampParam(key: string, value: number): number {
+  const lim = PARAM_LIMITS[key];
+  if (!lim) return value;
+  if (typeof value !== "number" || !Number.isFinite(value)) return lim[0];
+  return Math.min(lim[1], Math.max(lim[0], value));
+}
+
+// 整组参数限制:遍历所有数值字段(未知 key 原样保留)
+function sanitizeParams(params: unknown): unknown {
+  if (!params || typeof params !== "object") return params;
+  const out: Record<string, unknown> = { ...(params as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(out)) {
+    if (typeof v === "number") out[k] = clampParam(k, v);
+  }
+  return out;
+}
+
 export const ra = {
   // 音频健康检查:返回采样时钟;停滞 = 流失效(待机唤醒后 cpal 流挂起)
   audioHealth: (): Promise<number> => invoke("audio_health"),
@@ -15,9 +58,9 @@ export const ra = {
   noteOn: (ch: number, midi: number, vel: number) => invoke("note_on", { ch, midi, vel }),
   noteOff: (ch: number, midi: number) => invoke("note_off", { ch, midi }),
   allOff: (ch: number) => invoke("all_notes_off", { ch }),
-  // 整组音色参数(字段与 captureParams 驼峰一致,Rust EngineParams serde 直收)
-  setEngineParams: (ch: number, params: unknown) => invoke("set_engine_params", { ch, params }),
-  setParam: (ch: number, key: string, value: number) => invoke("set_param", { ch, key, value }),
+  // 整组音色参数(字段与 captureParams 驼峰一致,Rust EngineParams serde 直收;先经数值限制)
+  setEngineParams: (ch: number, params: unknown) => invoke("set_engine_params", { ch, params: sanitizeParams(params) }),
+  setParam: (ch: number, key: string, value: number) => invoke("set_param", { ch, key, value: clampParam(key, value) }),
   setWtSlots: (ch: number, slots: string[]) => invoke("set_wt_slots", { ch, slots }),
   // Rust 端 Vec<(f32,f32)> 序列化要求 [x,y] 数组
   setCustomAnchors: (ch: number, anchors: { x: number; y: number }[]) =>

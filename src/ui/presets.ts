@@ -259,6 +259,7 @@ export function applyParamsToEngine(eng: SynthEngine, p: ReturnType<typeof captu
   if (typeof p.eqBass === "number") {
     eng.eqBass = p.eqBass; eng.eqMid = p.eqMid ?? 0; eng.eqTreble = p.eqTreble ?? 0;
   }
+  eng.sanitizeParams();   // JS 内核层数值限制(旧预设可能存有 0 共振/越界值)
 }
 export function applyParams(p: ReturnType<typeof captureParams>) {
   applyParamsToEngine(engine, p);

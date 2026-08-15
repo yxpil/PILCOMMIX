@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "COMMIX",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "com.commix.synth",
   "app": {
     "windows": [{

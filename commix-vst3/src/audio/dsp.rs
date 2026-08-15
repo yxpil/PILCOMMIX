@@ -126,13 +126,15 @@ impl Biquad {
     }
     /// 重算系数(截止/共振/增益变化时)
     pub fn update(&mut self, freq: f32, q: f32) {
+        // 数值限制:NaN/Inf 被 max/min 忽略并回退到边界,freq 20..19000Hz,Q 0.1..30
+        // (Q<0.1 会导致 alpha=sinw/(2Q) 除零 → NaN 系数 → 音频流崩溃,必须下限保护)
         self.freq = freq.max(20.0).min(19000.0);
-        self.q = q.max(0.1);
+        self.q = q.max(0.1).min(30.0);
         let sr = sr();
         let w = (std::f32::consts::TAU * self.freq / sr).min(std::f32::consts::PI * 0.49);
         let cosw = w.cos();
         let sinw = w.sin();
-        let alpha = sinw / (2.0 * q);
+        let alpha = sinw / (2.0 * self.q);   // 用 clamp 后的 Q,原始 q=0/NaN 不再除零
         let a0 = 1.0 + alpha;
         match self.kind {
             1 => {  // highpass

@@ -103,6 +103,60 @@ impl Default for EngineParams {
     }
 }
 
+impl EngineParams {
+    /// 全参数数值限制(sanitize):NaN/Inf 被 f32::max/min 忽略并回退到边界;
+    /// 所有数值字段 clamp 到安全范围,杜绝越界/除零导致的 NaN 音频流崩溃。
+    /// set_params(整组灌入)与 SynthEngine::new 都调用,覆盖预设/宿主/VST 参数等全部入口。
+    pub fn sanitize(&mut self) {
+        self.detune_cents = self.detune_cents.max(0.0).min(1200.0);
+        self.cutoff_hz = self.cutoff_hz.max(20.0).min(19000.0);
+        self.resonance_q = self.resonance_q.max(0.1).min(30.0);   // 下限 0.1 防滤波器除零
+        self.cutoff_env_hz = self.cutoff_env_hz.max(-19000.0).min(19000.0);
+        self.cutoff_env_ms = self.cutoff_env_ms.max(0.0).min(5000.0);
+        self.attack = self.attack.max(0.001).min(30.0);
+        self.decay = self.decay.max(0.001).min(30.0);
+        self.sustain = self.sustain.max(0.0).min(1.0);
+        self.release = self.release.max(0.001).min(30.0);
+        self.volume = self.volume.max(0.0).min(2.0);
+        self.harmonics = self.harmonics.clamp(1, 32);
+        self.osc_count = self.osc_count.clamp(1, 8);
+        self.pan = self.pan.max(-1.0).min(1.0);
+        self.vibrato_rate = self.vibrato_rate.max(0.0).min(100.0);
+        self.vibrato_depth = self.vibrato_depth.max(0.0).min(1.0);
+        self.piano_decay_scale = self.piano_decay_scale.max(0.5).min(2.5);
+        self.piano_detune_cents = self.piano_detune_cents.max(0.0).min(100.0);
+        self.piano_noise_level = self.piano_noise_level.max(0.0).min(1.0);
+        self.piano_bright = self.piano_bright.max(0.5).min(2.0);
+        self.drip_ratio = self.drip_ratio.max(2.0).min(10.0);
+        self.drip_time_ms = self.drip_time_ms.max(50.0).min(500.0);
+        self.drip_decay_ms = self.drip_decay_ms.max(100.0).min(1000.0);
+        self.wt_pos = self.wt_pos.max(0.0).min(1.0);
+        self.wt_lfo_rate = self.wt_lfo_rate.max(0.0).min(100.0);
+        self.wt_lfo_depth = self.wt_lfo_depth.max(0.0).min(1.0);
+        self.portamento_ms = self.portamento_ms.max(0.0).min(10000.0);
+        self.filter_env_hz = self.filter_env_hz.max(-19000.0).min(19000.0);
+        self.filter_env_a = self.filter_env_a.max(0.001).min(30.0);
+        self.filter_env_d = self.filter_env_d.max(0.001).min(30.0);
+        self.filter_env_s = self.filter_env_s.max(0.0).min(1.0);
+        self.filter_env_r = self.filter_env_r.max(0.001).min(30.0);
+        self.mod_lfo_rate = self.mod_lfo_rate.max(0.0).min(100.0);
+        self.mod_lfo_depth = self.mod_lfo_depth.max(0.0).min(1.0);
+        self.key_track = self.key_track.max(0.0).min(1.0);
+        self.vel_track = self.vel_track.max(0.0).min(1.0);
+        self.sub_level = self.sub_level.max(0.0).min(1.0);
+        self.bend_cents = self.bend_cents.max(-4800.0).min(4800.0);
+        self.gain = self.gain.max(0.0).min(2.0);
+        self.note_jitter = self.note_jitter.max(0.0).min(1.0);
+        self.dx_bits = self.dx_bits.clamp(8, 16);
+        self.dx_algorithm = match self.dx_algorithm { 1..=7 => self.dx_algorithm, 32 => 7, _ => 1 };
+        self.dx_feedback = self.dx_feedback.clamp(0, 7);
+        for r in self.dx_ratios.iter_mut() { *r = r.max(0.01).min(64.0); }
+        for t in self.dx_tls.iter_mut() { *t = t.max(0.0).min(99.0); }
+        for d in self.dx_dets.iter_mut() { *d = d.max(0.0).min(7.0); }
+        for e in self.dx_egs.iter_mut() { *e = e.max(0.0).min(99.0); }
+    }
+}
+
 pub struct SynthEngine {
     pub params: EngineParams,
     pub voices: Vec<Voice>,
@@ -116,7 +170,8 @@ pub struct SynthEngine {
 }
 
 impl SynthEngine {
-    pub fn new(params: EngineParams) -> Self {
+    pub fn new(mut params: EngineParams) -> Self {
+        params.sanitize();   // 全参数数值限制(防 NaN/越界)
         let mut noise = vec![0.0; (0.06 * sr()) as usize];
         for n in noise.iter_mut() { *n = super::dsp::rand01() * 2.0 - 1.0; }
         let wt_bank = build_wt_bank(&params.wt_slots, params.harmonics as usize, None);
@@ -134,7 +189,8 @@ impl SynthEngine {
     }
 
     /// 更换音色参数(整组灌入,预设/程序变更用)
-    pub fn set_params(&mut self, p: EngineParams) {
+    pub fn set_params(&mut self, mut p: EngineParams) {
+        p.sanitize();   // 全参数数值限制(整组灌入也要防越界)
         self.params = p;
         self.rebuild_tables();
     }
@@ -145,49 +201,49 @@ impl SynthEngine {
             let p = &mut self.params;
             let f = v as f32;
             match key {
-                "volume" => p.volume = f,
-                "attack" => p.attack = f,
-                "decay" => p.decay = f,
-                "sustain" => p.sustain = f,
-                "release" => p.release = f,
-                "harmonics" => p.harmonics = v.clamp(1.0, 32.0) as u16,
-                "osc_count" => p.osc_count = v.clamp(1.0, 8.0) as u8,
-                "detune_cents" => p.detune_cents = f,
+                "volume" => p.volume = f.max(0.0).min(2.0),
+                "attack" => p.attack = f.max(0.001).min(30.0),
+                "decay" => p.decay = f.max(0.001).min(30.0),
+                "sustain" => p.sustain = f.max(0.0).min(1.0),
+                "release" => p.release = f.max(0.001).min(30.0),
+                "harmonics" => p.harmonics = v.max(1.0).min(32.0) as u16,
+                "osc_count" => p.osc_count = v.max(1.0).min(8.0) as u8,
+                "detune_cents" => p.detune_cents = f.max(0.0).min(1200.0),
             "filter_kind" => if v < 0.5 { p.filter_kind = "lowpass".into() } else { p.filter_kind = "highpass".into() },
-            "cutoff_hz" => p.cutoff_hz = f,
-            "resonance_q" => p.resonance_q = f,
-            "cutoff_env_hz" => p.cutoff_env_hz = f,
-            "cutoff_env_ms" => p.cutoff_env_ms = f,
+            "cutoff_hz" => p.cutoff_hz = f.max(20.0).min(19000.0),
+            "resonance_q" => p.resonance_q = f.max(0.1).min(30.0),   // 下限 0.1 防滤波器除零崩溃
+            "cutoff_env_hz" => p.cutoff_env_hz = f.max(-19000.0).min(19000.0),
+            "cutoff_env_ms" => p.cutoff_env_ms = f.max(0.0).min(5000.0),
             "mono_mode" => p.mono_mode = v > 0.5,
-            "pan" => p.pan = f.clamp(-1.0, 1.0),
-            "vibrato_rate" => p.vibrato_rate = f,
-            "vibrato_depth" => p.vibrato_depth = f,
-            "piano_decay_scale" => p.piano_decay_scale = f,
-            "piano_detune_cents" => p.piano_detune_cents = f,
-            "piano_noise_level" => p.piano_noise_level = f,
-            "piano_bright" => p.piano_bright = f,
-            "drip_ratio" => p.drip_ratio = f,
-            "drip_time_ms" => p.drip_time_ms = f,
-            "drip_decay_ms" => p.drip_decay_ms = f,
-            "wt_pos" => p.wt_pos = f,
-            "wt_lfo_rate" => p.wt_lfo_rate = f,
-            "wt_lfo_depth" => p.wt_lfo_depth = f,
-            "portamento_ms" => p.portamento_ms = f,
-            "filter_env_hz" => p.filter_env_hz = f,
-            "filter_env_a" => p.filter_env_a = f,
-            "filter_env_d" => p.filter_env_d = f,
-            "filter_env_s" => p.filter_env_s = f,
-            "filter_env_r" => p.filter_env_r = f,
-            "mod_lfo_rate" => p.mod_lfo_rate = f,
-            "mod_lfo_depth" => p.mod_lfo_depth = f,
+            "pan" => p.pan = f.max(-1.0).min(1.0),
+            "vibrato_rate" => p.vibrato_rate = f.max(0.0).min(100.0),
+            "vibrato_depth" => p.vibrato_depth = f.max(0.0).min(1.0),
+            "piano_decay_scale" => p.piano_decay_scale = f.max(0.5).min(2.5),
+            "piano_detune_cents" => p.piano_detune_cents = f.max(0.0).min(100.0),
+            "piano_noise_level" => p.piano_noise_level = f.max(0.0).min(1.0),
+            "piano_bright" => p.piano_bright = f.max(0.5).min(2.0),
+            "drip_ratio" => p.drip_ratio = f.max(2.0).min(10.0),
+            "drip_time_ms" => p.drip_time_ms = f.max(50.0).min(500.0),
+            "drip_decay_ms" => p.drip_decay_ms = f.max(100.0).min(1000.0),
+            "wt_pos" => p.wt_pos = f.max(0.0).min(1.0),
+            "wt_lfo_rate" => p.wt_lfo_rate = f.max(0.0).min(100.0),
+            "wt_lfo_depth" => p.wt_lfo_depth = f.max(0.0).min(1.0),
+            "portamento_ms" => p.portamento_ms = f.max(0.0).min(10000.0),
+            "filter_env_hz" => p.filter_env_hz = f.max(-19000.0).min(19000.0),
+            "filter_env_a" => p.filter_env_a = f.max(0.001).min(30.0),
+            "filter_env_d" => p.filter_env_d = f.max(0.001).min(30.0),
+            "filter_env_s" => p.filter_env_s = f.max(0.0).min(1.0),
+            "filter_env_r" => p.filter_env_r = f.max(0.001).min(30.0),
+            "mod_lfo_rate" => p.mod_lfo_rate = f.max(0.0).min(100.0),
+            "mod_lfo_depth" => p.mod_lfo_depth = f.max(0.0).min(1.0),
             "mod_lfo_wave" => if v < 0.5 { p.mod_lfo_wave = "sine".into() } else { p.mod_lfo_wave = "s&h".into() },
             "mod_lfo_target" => match v as i64 { 1 => p.mod_lfo_target = "cutoff".into(), 2 => p.mod_lfo_target = "volume".into(), 3 => p.mod_lfo_target = "pan".into(), _ => p.mod_lfo_target = "off".into() },
-            "key_track" => p.key_track = f,
-            "vel_track" => p.vel_track = f,
-            "sub_level" => p.sub_level = f,
+            "key_track" => p.key_track = f.max(0.0).min(1.0),
+            "vel_track" => p.vel_track = f.max(0.0).min(1.0),
+            "sub_level" => p.sub_level = f.max(0.0).min(1.0),
             "sub_wave" => if v < 0.5 { p.sub_wave = "sine".into() } else { p.sub_wave = "square".into() },
-            "gain" => p.gain = f.clamp(0.0, 2.0),
-            "note_jitter" => p.note_jitter = f.clamp(0.0, 1.0),
+            "gain" => p.gain = f.max(0.0).min(2.0),
+            "note_jitter" => p.note_jitter = f.max(0.0).min(1.0),
             "dx_pm" => p.dx_pm = v > 0.5,
             "dx_lut" => p.dx_lut = v > 0.5,
             "dx_quant" => p.dx_quant = v > 0.5,
