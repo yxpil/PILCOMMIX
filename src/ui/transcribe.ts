@@ -434,8 +434,18 @@ $id("btn-plsp-open").addEventListener("click", async () => {
       tones: j.tones,
     };
     analysis = a;   // 应用匹配音色/保存也基于此
+    // 读取文件内音色:每轨音色参数自动灌入对应通道引擎(弹琴/播放都能听到文件音色,不必手动"应用匹配音色")
+    let applied = 0;
+    for (const t of a.tones) {
+      const p = captureParams();
+      p.waveType = t.waveType as typeof p.waveType;
+      Object.assign(p, t.params);
+      ra.setEngineParams(t.track, p);
+      applied++;
+    }
     renderPlspJianpu(a, name);
-    wavStatus(`已加载 ${name} · ${j.notes.length} 音符 · ${j.tones.length} 轨音色 · ~${Math.round(j.bpm)} BPM · ${j.beatsPerBar} 拍/小节 · 时长 ${j.durationSec.toFixed(1)}s — 点播放`);
+    wavStatus(`已加载 ${name} · ${j.notes.length} 音符 · 已读取 ${applied} 轨文件音色 · ~${Math.round(j.bpm)} BPM · ${j.beatsPerBar} 拍/小节 · 时长 ${j.durationSec.toFixed(1)}s — 点播放 .plspmid`);
+    if (applied > 0) toast(`已读取 ${applied} 轨文件音色`);
   } catch (e) {
     if (!String(e).includes("已取消")) toast("打开失败: " + String(e).slice(0, 60));
   }
