@@ -378,8 +378,8 @@ fn open_midi() -> Result<(String, String), String> {
 #[tauri::command]
 fn open_wav() -> Result<(String, String), String> {
     let file = rfd::FileDialog::new()
-        .set_title("打开 WAV 文件")
-        .add_filter("WAV 音频", &["wav"])
+        .set_title("打开音频文件(WAV/MP3/OGG)")
+        .add_filter("音频文件", &["wav", "mp3", "ogg"])
         .pick_file();
     match file {
         Some(path) => {
@@ -391,11 +391,19 @@ fn open_wav() -> Result<(String, String), String> {
     }
 }
 
-/// 试听 WAV(重采样叠加到输出总线)
+/// WAV → 自定义波形锚点:提取稳定单周期 + 去 DC + 归一化,返回 [[x,y],...]
+#[tauri::command]
+fn wav_to_wave(bytes_base64: String, points: usize) -> Result<Vec<Vec<f32>>, String> {
+    let bytes = base64_decode(&bytes_base64).map_err(|e| format!("解码失败: {e}"))?;
+    let w = audio::audio_to_mono(&bytes).map_err(|e| format!("音频解析失败: {e}"))?;
+    Ok(audio::wav::wav_to_anchors(&w.mono, w.sample_rate, points))
+}
+
+/// 试听音频(WAV/MP3/OGG,重采样叠加到输出总线)
 #[tauri::command]
 fn wav_play(audio: State<AudioState>, bytes_base64: String) -> Result<(), String> {
     let bytes = base64_decode(&bytes_base64)?;
-    let w = audio::wav::parse_wav(&bytes)?;
+    let w = audio::audio_to_mono(&bytes)?;
     let mut b = audio.bus.lock().map_err(|e| e.to_string())?;
     b.wav = Some(audio::WavPlayback { mono: w.mono, pos: 0.0, sample_rate: w.sample_rate, gain: 0.8 });
     Ok(())
@@ -412,7 +420,7 @@ fn wav_stop(audio: State<AudioState>) {
 #[tauri::command]
 fn analyze_wav(bytes_base64: String) -> Result<String, String> {
     let bytes = base64_decode(&bytes_base64)?;
-    let w = audio::wav::parse_wav(&bytes)?;
+    let w = audio::audio_to_mono(&bytes)?;
     let r = audio::analyze::transcribe(&w.mono, w.sample_rate);
     // 按音区轨分组 → 每轨音色匹配
     use std::collections::BTreeMap;
@@ -805,6 +813,7 @@ pub fn run() {
             save_midi,
             open_midi,
             open_wav,
+            wav_to_wave,
             open_mp3,
             wav_play,
             wav_stop,

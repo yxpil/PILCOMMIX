@@ -16,6 +16,8 @@ cpal = "0.15"
 hound = "3"
 zip = "2"
 minimp3 = "0.5"
+lewton = "0.10"
+ogg = "0.8"
 
 [features]
 default = ["custom-protocol"]

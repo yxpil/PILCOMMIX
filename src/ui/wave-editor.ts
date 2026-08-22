@@ -288,6 +288,30 @@ $id("btn-apply-fn").addEventListener("click", () => {
   if (v) applyFunctionWave(v);
 });
 
+// 上传 WAV → 提取单周期作自定义波形(Rust wav_to_wave:自相关周期估计 + 归一化)
+$id("btn-wav-wave").addEventListener("click", async () => {
+  try {
+    const [b64] = await ra.openWav();
+    const pts: number[][] = await ra.wavToWave(b64, 64);
+    if (!pts.length) { toast("WAV 解析为空"); return; }
+    setAnchors(pts.map(([x, y]) => ({ x, y })));
+    if (engine.waveType !== "grain") {
+      engine.setWave("custom");
+      presetButtons.forEach((p) => p.classList.toggle("active", p.dataset.wave === "custom"));
+    }
+    syncGrainWaveFromAnchors();
+    const wpts = grainWaveToAnchors();
+    engine.setCustomWave(wpts);
+    ra.setCustomAnchors(0, wpts);
+    $id("sp-note").textContent = engine.waveType === "grain" ? "已应用到粒子源波形" : "";
+    drawWave();
+    toast(engine.waveType === "grain" ? "粒子源波形已更新" : "已导入 WAV 波形");
+  } catch (err) {
+    if (String(err).includes("已取消")) return;
+    toast("WAV 导入失败:" + String(err).slice(0, 40));
+  }
+});
+
 // ============ 数值坐标定义波形 ============
 // 输入如 "0,1,0.5,0.6,0.6"(或带括号/空格分隔):N 个数值按波表均分,
 // 第 i 个值落在 x = i/(N-1),相邻值线性过渡 —— 用坐标精确定义波形。

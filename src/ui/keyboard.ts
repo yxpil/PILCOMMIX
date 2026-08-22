@@ -12,12 +12,12 @@ const keyRefs = new Map<number, number>();          // midi → 按住的键数(
 const clampMidi = (m: number) => Math.min(127, Math.max(0, m));
 
 // 按键引用计数:同一音高被多个来源(如 , 与 Q 同音)按下时只发一次声,全部松开才释放
-function pressKey(midi: number, velocity = 1) {
+export function pressKey(midi: number, velocity = 1) {
   const c = keyRefs.get(midi) ?? 0;
   keyRefs.set(midi, c + 1);
   if (c === 0) noteOn(midi, velocity);
 }
-function releaseKey(midi: number) {
+export function releaseKey(midi: number) {
   const c = keyRefs.get(midi) ?? 0;
   if (c <= 1) { keyRefs.delete(midi); noteOff(midi); }
   else keyRefs.set(midi, c - 1);

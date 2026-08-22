@@ -78,9 +78,133 @@ pub fn parse_wav(bytes: &[u8]) -> Result<WavData, String> {
     })
 }
 
+/// WAV → 自定义波形锚点:提取稳定单周期,重采样到 n 点,去 DC + 归一化 [-1,1]
+/// 输出 [(x, y), ...] x ∈ [0,1] 等分
+pub fn wav_to_anchors(mono: &[f32], sr: u32, n: usize) -> Vec<Vec<f32>> {
+    let n = n.clamp(8, 512);
+    let downsample = |src: &[f32]| -> Vec<f32> {
+        let len = src.len().max(2);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let pos = i as f32 / (n - 1) as f32 * (len - 1) as f32;
+            let i0 = pos as usize;
+            let i1 = (i0 + 1).min(len - 1);
+            let f = pos - i0 as f32;
+            out.push(src[i0] * (1.0 - f) + src[i1] * f);
+        }
+        out
+    };
+    // 跳过开头 10%(避开瞬态),至少留 50ms
+    let skip = (mono.len() / 10).min(mono.len().saturating_sub(sr as usize / 20));
+    let seg = &mono[skip..];
+    if seg.len() < sr as usize / 50 {
+        return normalize_anchors(downsample(mono), n);
+    }
+    // 自相关周期估计(30Hz-2kHz);选显著峰值的**最小**周期(基频优先,避免倍频:正弦 4 倍周期处相关同样≈1)
+    let min_p = (sr as usize / 2000).max(8);
+    let max_p = (sr as usize / 30).min(seg.len() / 2);
+    if max_p <= min_p {
+        return normalize_anchors(downsample(seg), n);
+    }
+    let mut best_c = -1.0f32;
+    for p in min_p..=max_p {
+        let lim = (seg.len() - p).min(sr as usize);
+        if lim == 0 { continue; }
+        let mut c = 0.0f32;
+        for i in 0..lim { c += seg[i] * seg[i + p]; }
+        c /= lim as f32;
+        if c > best_c { best_c = c; }
+    }
+    // 正向扫描:第一个达到峰值 95% 的周期(最短显著周期 = 基频)
+    let mut best_p = min_p;
+    for p in min_p..=max_p {
+        let lim = (seg.len() - p).min(sr as usize);
+        if lim == 0 { continue; }
+        let mut c = 0.0f32;
+        for i in 0..lim { c += seg[i] * seg[i + p]; }
+        c /= lim as f32;
+        if c >= best_c * 0.95 { best_p = p; break; }
+    }
+    // 从升沿过零开始取 2 个周期;终点对齐到最近的升沿过零(整数周期,首尾闭合,波形无跳变)
+    let mut z = 0usize;
+    for i in 1..seg.len() {
+        if seg[i - 1] < 0.0 && seg[i] >= 0.0 { z = i; break; }
+    }
+    let target = z + best_p * 2;
+    let mut end = target.min(seg.len());
+    if end > z + 2 {
+        let lo = target.saturating_sub(best_p / 4);
+        let hi = (target + best_p / 4).min(seg.len().saturating_sub(1));
+        let mut best_d = usize::MAX;
+        for i in lo..hi {
+            if seg[i - 1] < 0.0 && seg[i] >= 0.0 {
+                let d = i.abs_diff(target);
+                if d < best_d { best_d = d; end = i; }
+            }
+        }
+        return normalize_anchors(downsample(&seg[z..end]), n);
+    }
+    normalize_anchors(downsample(seg), n)
+}
+
+fn normalize_anchors(mut pts: Vec<f32>, n: usize) -> Vec<Vec<f32>> {
+    let dc = pts.iter().sum::<f32>() / pts.len().max(1) as f32;
+    for v in pts.iter_mut() { *v -= dc; }
+    let peak = pts.iter().fold(0.0f32, |a, v| a.max(v.abs())).max(1e-6);
+    pts.iter().enumerate()
+        .map(|(i, v)| vec![i as f32 / (n - 1) as f32, (v / peak).clamp(-1.0, 1.0)])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synth(freq: f32, sr: u32, secs: f32) -> Vec<f32> {
+        let n = (sr as f32 * secs) as usize;
+        (0..n).map(|i| ((i as f32 / sr as f32) * freq * 2.0 * std::f32::consts::PI).sin()).collect()
+    }
+
+    #[test]
+    fn wav_to_anchors_sine_cycle() {
+        // 440Hz 正弦,0.2s → 88 个周期;提取 1 周期应接近正弦且幅度归一 [-1,1]
+        let sr = 44100u32;
+        let mono = synth(440.0, sr, 0.2);
+        let a = wav_to_anchors(&mono, sr, 64);
+        assert_eq!(a.len(), 64);
+        // 首尾接近 0(整周期)
+        assert!(a[0][1].abs() < 0.15, "起点应近零, got {}", a[0][1]);
+        assert!(a[63][1].abs() < 0.2, "终点应近零, got {}", a[63][1]);
+        // 峰值约 ±1(归一化)
+        let peak: f32 = a.iter().map(|p| p[1].abs()).fold(0.0, f32::max);
+        assert!((peak - 1.0).abs() < 0.05, "峰值应≈1, got {peak}");
+        // x 严格递增 0..1
+        assert_eq!(a[0][0], 0.0);
+        assert!((a[63][0] - 1.0).abs() < 1e-4);
+        // 形状为正弦(中间区域应有正→负过零;64 点采样可能恰好跳过零点,用符号变化检测)
+        let mid_pts: Vec<f32> = a.iter().filter(|p| p[0] > 0.4 && p[0] < 0.6).map(|p| p[1]).collect();
+        let has_cross = mid_pts.windows(2).any(|w| w[0] * w[1] <= 0.0);
+        assert!(has_cross, "中间应过零, got {mid_pts:?}");
+        // 提取应恰为 ~2 个周期(基频优先,防倍频):440Hz@44.1k → 周期≈100 样本 → 提取≈200 样本
+        // 通过过零次数验证:2 个完整正弦周期 = 4 次符号变化(0 值样本不重复计数)
+        let mut zc = 0usize;
+        for i in 0..a.len() - 1 {
+            let (p, q) = (a[i][1], a[i + 1][1]);
+            if (p < 0.0 && q >= 0.0) || (p > 0.0 && q <= 0.0) { zc += 1; }
+        }
+        assert!((3..=6).contains(&zc), "应≈4 次过零(2 周期), got {zc}");
+    }
+
+    #[test]
+    fn wav_to_anchors_noise_still_normalized() {
+        // 噪声(无稳定周期)→ 降级为整段下采样,仍归一化
+        let sr = 44100u32;
+        let mut mono: Vec<f32> = (0..sr as usize).map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0).collect();
+        let a = wav_to_anchors(&mono, sr, 32);
+        assert_eq!(a.len(), 32);
+        let peak: f32 = a.iter().map(|p| p[1].abs()).fold(0.0, f32::max);
+        assert!((peak - 1.0).abs() < 0.05);
+    }
 
     fn make_pcm16_wav(samples: &[i16], sr: u32, channels: u16) -> Vec<u8> {
         let data_len = samples.len() * 2;

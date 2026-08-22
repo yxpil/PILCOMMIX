@@ -8,6 +8,7 @@ pub mod fft;
 pub mod fx;
 pub mod metro;
 pub mod mp3;
+pub mod ogg;
 pub mod pilmu;
 pub mod player;
 pub mod plspmid;
@@ -21,6 +22,22 @@ pub use arp::ArpState;
 pub use metro::MetroState;
 pub use smart::SmartOpt;
 pub mod waves;
+
+/// 统一音频解码入口:按魔数路由 WAV/OGG/MP3 → 单声道 f32(供试听/扒谱/波形提取)
+pub fn audio_to_mono(bytes: &[u8]) -> Result<wav::WavData, String> {
+    if bytes.starts_with(b"RIFF") {
+        return wav::parse_wav(bytes);
+    }
+    if bytes.starts_with(b"OggS") {
+        return ogg::ogg_to_wav(bytes);
+    }
+    // MP3:ID3 标签头或帧同步字 0xFF Ex
+    if bytes.starts_with(b"ID3") || (bytes.len() > 1 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0) {
+        return mp3::mp3_to_wav(bytes);
+    }
+    // 兜底交给宽容的 minimp3
+    mp3::mp3_to_wav(bytes)
+}
 
 use engine::EngineParams;
 use engine::SynthEngine;

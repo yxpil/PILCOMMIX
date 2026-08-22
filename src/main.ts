@@ -29,6 +29,7 @@ import "./ui/cc-panel";
 import "./ui/midi-test";
 import "./ui/arpeggio";
 import "./ui/pilmu";
+import "./ui/hallkey";
 import "./ui/updater";
 
 // ============ 窗口控制 ============

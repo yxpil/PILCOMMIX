@@ -82,6 +82,9 @@ export const ra = {
   wavStop: () => invoke("wav_stop"),
   // 自动扒谱 + 音色匹配(返回 JSON 字符串)
   analyzeWav: (b64: string): Promise<string> => invoke("analyze_wav", { bytesBase64: b64 }),
+  // WAV → 自定义波形锚点(单周期提取 + 归一化,返回 [[x,y],...])
+  wavToWave: (b64: string, points = 64): Promise<number[][]> =>
+    invoke("wav_to_wave", { bytesBase64: b64, points }),
   // .plspmid 超高密度格式(32 轨,密度 4 倍)
   plspmidEncode: (notesJson: string, tonesJson: string, bpm: number, beatsPerBar: number): Promise<string> =>
     invoke("plspmid_encode", { notesJson, tonesJson, bpm, beatsPerBar }),

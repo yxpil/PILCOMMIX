@@ -159,9 +159,9 @@ pub fn plan_playback(
     let mut used = 0usize;
     for t in &manifest.tracks {
         match t.kind.as_str() {
-            "wav" | "mp3" => {
+            "wav" | "mp3" | "ogg" => {
                 let data = resources.get(&t.file).ok_or_else(|| format!("轨道 {} 资源缺失", t.name))?;
-                let w = if t.kind == "wav" { super::wav::parse_wav(data)? } else { super::mp3::mp3_to_wav(data)? };
+                let w = super::audio_to_mono(data)?;
                 let offset_samples = t.offset_ms as u64 * super::dsp::sr() as u64 / 1000;
                 let track_end = start_sample + offset_samples + (w.mono.len() as f64 / w.sample_rate as f64 * sr) as u64;
                 end_sample = end_sample.max(track_end);

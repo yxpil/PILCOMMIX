@@ -6,7 +6,7 @@ import { $id, toast } from "./dom";
 interface ProjTrack {
   id: number;
   name: string;
-  kind: "plspmid" | "mid" | "wav" | "mp3" | "code";
+  kind: "plspmid" | "mid" | "wav" | "mp3" | "ogg" | "code";
   file: string;
   volume: number;    // 0..2
   pan: number;       // -1..1
@@ -14,8 +14,8 @@ interface ProjTrack {
 }
 let proj: { name: string; bpm: number; beatsPerBar: number; tracks: ProjTrack[]; files: Map<string, string> } | null = null;
 let nextId = 0;
-const KIND_LABEL: Record<string, string> = { plspmid: "plspmid", mid: "MIDI", wav: "WAV", mp3: "MP3", code: "代码" };
-const KIND_EXT: Record<string, string> = { plspmid: "plspmid", mid: "mid", wav: "wav", mp3: "mp3", code: "mcode" };
+const KIND_LABEL: Record<string, string> = { plspmid: "plspmid", mid: "MIDI", wav: "WAV", mp3: "MP3", ogg: "OGG", code: "代码" };
+const KIND_EXT: Record<string, string> = { plspmid: "plspmid", mid: "mid", wav: "wav", mp3: "mp3", ogg: "ogg", code: "mcode" };
 
 function projStatus(msg: string) {
   const st = $id("proj-status");
@@ -194,6 +194,7 @@ $id("btn-proj-add-plsp").addEventListener("click", () => addTrack("plspmid", ra.
 $id("btn-proj-add-mid").addEventListener("click", () => addTrack("mid", ra.openMidi));
 $id("btn-proj-add-wav").addEventListener("click", () => addTrack("wav", ra.openWav));
 $id("btn-proj-add-mp3").addEventListener("click", () => addTrack("mp3", ra.openMp3));
+$id("btn-proj-add-ogg").addEventListener("click", () => addTrack("ogg", ra.openWav));   // openWav 现支持 wav/mp3/ogg
 
 // ============ 音乐编程代码轨(mcode):代码定义音乐 ============
 const CODE_SAMPLE = `// 代码定义音乐:钢琴旋律 + 贝斯 + 和弦

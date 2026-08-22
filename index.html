@@ -105,6 +105,7 @@
             <input class="fn-input" id="fn-input" spellcheck="false"
               placeholder="数学函数生成波形,如 sin(2*pi*x)、cos(x*pi*4)、x^3-x、tan(x*pi)" />
             <button class="tool-btn" id="btn-apply-fn">应用函数</button>
+            <button class="tool-btn" id="btn-wav-wave"><svg class="ic"><use href="#i-folder"/></svg>上传音频波形</button>
           </div>
           <div class="fn-row">
             <input class="fn-input" id="coord-input" spellcheck="false"
@@ -688,6 +689,13 @@
               <label class="ctrl-label">发声</label>
               <button class="mini-btn" id="btn-mute"><svg class="ic"><use href="#i-mute"/></svg>静音</button>
             </div>
+            <div class="midi-out-row">
+              <label class="ctrl-label">磁轴键盘</label>
+              <button class="mini-btn" id="btn-hall-scan">扫描</button>
+              <button class="mini-btn" id="btn-hall-disconnect">断开</button>
+              <span class="midi-status" id="hall-status">未连接(霍尔力度)</span>
+            </div>
+            <div class="vel-hint" style="margin-top:2px" id="hall-dbg"></div>
           </div>
 
           <!-- 节拍:节拍器 -->
@@ -872,6 +880,7 @@
                 <button class="tool-btn" id="btn-proj-add-mid"><svg class="ic"><use href="#i-plus"/></svg>MIDI</button>
                 <button class="tool-btn" id="btn-proj-add-wav"><svg class="ic"><use href="#i-plus"/></svg>WAV</button>
                 <button class="tool-btn" id="btn-proj-add-mp3"><svg class="ic"><use href="#i-plus"/></svg>MP3</button>
+                <button class="tool-btn" id="btn-proj-add-ogg"><svg class="ic"><use href="#i-plus"/></svg>OGG</button>
                 <button class="tool-btn" id="btn-proj-add-code"><svg class="ic"><use href="#i-pencil"/></svg>代码(音乐编程)</button>
               </div>
               <div class="proj-status" id="proj-status">多轨音乐工程 .PILMU(ZIP 无损压缩,可拖拽排序/编辑):MIDI + 超高密度 plspmid + WAV + MP3 + 代码轨混合</div>
