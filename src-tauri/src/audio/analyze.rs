@@ -192,6 +192,8 @@ fn estimate_bpm(notes: &[DetectedNote]) -> f32 {
     // 归一化到合理范围(避免倍速/半速误判)
     while bpm > 300.0 { bpm /= 2.0; }
     while bpm < 30.0 { bpm *= 2.0; }
+    // 慢速优先:>200 视为装饰音密度(十六分/三十二分流),降半取拍(用户要"慢慢降低拍子")
+    if bpm > 200.0 { bpm /= 2.0; }
     bpm
 }
 
