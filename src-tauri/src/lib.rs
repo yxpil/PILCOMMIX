@@ -465,6 +465,33 @@ fn plspmid_encode(notes_json: String, tones_json: String, bpm: f32, beats_per_ba
     Ok(base64_encode(&bytes))
 }
 
+/// 解析 .plspmid → JSON(供前端渲染简谱):{bpm, division, usPerQuarter, beatsPerBar, durationSec, notes:[{tick,dur,midi,vel,track}], tones:[{track,waveType}]}
+#[tauri::command]
+fn plspmid_parse(bytes_base64: String) -> Result<String, String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let plsp = audio::plspmid::decode(&bytes)?;
+    let bpm = if plsp.us_per_quarter > 0 { 60_000_000.0 / plsp.us_per_quarter as f32 } else { 120.0 };
+    let notes: Vec<serde_json::Value> = plsp.notes.iter().map(|n| {
+        serde_json::json!({ "tick": n.tick, "dur": n.dur, "midi": n.midi, "vel": n.vel, "track": n.track })
+    }).collect();
+    let tones: Vec<serde_json::Value> = plsp.tones.iter().map(|t| {
+        let mut params = serde_json::Map::new();
+        for (k, v) in &t.params { params.insert(k.clone(), serde_json::json!(v)); }
+        serde_json::json!({ "track": t.track, "waveType": t.wave_type, "params": params })
+    }).collect();
+    let sec_per_tick = plsp.us_per_quarter as f64 / 1e6 / plsp.division as f64;
+    let max_tick = plsp.notes.iter().map(|n| n.tick + n.dur).max().unwrap_or(0);
+    Ok(serde_json::json!({
+        "bpm": bpm,
+        "division": plsp.division,
+        "usPerQuarter": plsp.us_per_quarter,
+        "beatsPerBar": plsp.beats_per_bar,
+        "durationSec": max_tick as f64 * sec_per_tick,
+        "notes": notes,
+        "tones": tones,
+    }).to_string())
+}
+
 /// 打开 .plspmid 文件(对话框),返回 base64 与文件名
 #[tauri::command]
 fn plspmid_open() -> Result<(String, String), String> {
@@ -827,6 +854,7 @@ pub fn run() {
             wav_stop,
             analyze_wav,
             plspmid_encode,
+            plspmid_parse,
             plspmid_open,
             plspmid_save,
             plspmid_play,

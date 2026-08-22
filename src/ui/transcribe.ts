@@ -341,7 +341,7 @@ $id("btn-wav-analyze").addEventListener("click", async () => {
 });
 
 // 扒谱结果 → 简谱(按音区轨分组,时间轴对齐)
-function renderPlspJianpu(a: NonNullable<typeof analysis>) {
+function renderPlspJianpu(a: NonNullable<typeof analysis>, srcName = wavName) {
   const el = $id("trans-output");
   if (a.notes.length === 0) { el.textContent = "没检出音符(音频可能太轻或太噪)"; return; }
   const spb = a.bpm > 1 ? 60 / a.bpm : 0.5;   // 秒/拍
@@ -351,7 +351,7 @@ function renderPlspJianpu(a: NonNullable<typeof analysis>) {
     tracks.get(n.track)!.push(n);
   }
   const parts: string[] = [];
-  parts.push(`WAV ${wavName} · ~${Math.round(a.bpm)} BPM · ${a.notes.length} 音符 · ${tracks.size} 轨 · 时长 ${a.duration}s`);
+  parts.push(`${srcName} · ~${Math.round(a.bpm)} BPM · ${a.notes.length} 音符 · ${tracks.size} 轨 · 时长 ${a.duration}s`);
   parts.push("=".repeat(46));
   for (const [tr, ns] of [...tracks.entries()].sort((x, y) => x[0] - y[0])) {
     const tone = a.tones.find((t) => t.track === tr);
@@ -407,12 +407,35 @@ $id("btn-wav-save-plsp").addEventListener("click", async () => {
   }
 });
 
-// 打开 .plspmid
+// 打开 .plspmid:解析并渲染简谱(超高密度 32 轨格式)
 $id("btn-plsp-open").addEventListener("click", async () => {
   try {
     const [b64, name] = await ra.plspmidOpen();
     plspB64 = b64;
-    wavStatus(`已加载 ${name} — 超高密度(32 轨 × 1920 ticks/四分音符),点播放`);
+    const j = JSON.parse(await ra.plspmidParse(b64)) as {
+      bpm: number; division: number; usPerQuarter: number; beatsPerBar: number; durationSec: number;
+      notes: { tick: number; dur: number; midi: number; vel: number; track: number }[];
+      tones: { track: number; waveType: string; params: Record<string, number> }[];
+    };
+    const spT = j.usPerQuarter / 1e6 / j.division;   // 秒/tick
+    const a = {
+      bpm: j.bpm,
+      duration: j.durationSec,
+      sampleRate: 44100,   // plspmid 无采样率概念,占位(渲染不用)
+      notes: j.notes.map((n) => ({
+        t: n.tick * spT,
+        dur: Math.max(0.01, n.dur * spT),
+        midi: n.midi,
+        vel: Math.min(1, n.vel / 127),
+        track: n.track,
+        bright: 0.5,      // plspmid 无特征数据,占位
+        attackMs: 0,
+      })),
+      tones: j.tones,
+    };
+    analysis = a;   // 应用匹配音色/保存也基于此
+    renderPlspJianpu(a, name);
+    wavStatus(`已加载 ${name} · ${j.notes.length} 音符 · ${j.tones.length} 轨音色 · ~${Math.round(j.bpm)} BPM · ${j.beatsPerBar} 拍/小节 · 时长 ${j.durationSec.toFixed(1)}s — 点播放`);
   } catch (e) {
     if (!String(e).includes("已取消")) toast("打开失败: " + String(e).slice(0, 60));
   }

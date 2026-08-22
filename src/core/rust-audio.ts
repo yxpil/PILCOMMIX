@@ -88,6 +88,7 @@ export const ra = {
   // .plspmid 超高密度格式(32 轨,密度 4 倍)
   plspmidEncode: (notesJson: string, tonesJson: string, bpm: number, beatsPerBar: number): Promise<string> =>
     invoke("plspmid_encode", { notesJson, tonesJson, bpm, beatsPerBar }),
+  plspmidParse: (b64: string): Promise<string> => invoke("plspmid_parse", { bytesBase64: b64 }),
   plspmidOpen: (): Promise<[string, string]> => invoke("plspmid_open"),
   plspmidSave: (b64: string) => invoke("plspmid_save", { bytesBase64: b64 }),
   plspmidPlay: (b64: string) => invoke("plspmid_play", { bytesBase64: b64 }),
