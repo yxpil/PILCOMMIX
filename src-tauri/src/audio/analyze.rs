@@ -4,13 +4,13 @@
 
 use super::fft::fft_magnitudes;
 
-pub const FRAME: usize = 4096;   // FFT 帧长(低频分辨率 ≈ 10.8Hz @44.1k,支持 A1=55Hz 起)
-pub const HOP: usize = 512;      // 帧步进(超高密度:每帧 ~11.6ms)
+pub const FRAME: usize = 4096;   // FFT 帧长(带 Hann 窗;8192 窗长 186ms 会时间模糊把相邻音符过渡帧误检,4096≈93ms 平衡)
+pub const HOP: usize = 256;      // 帧步进(暴力:每帧 ~5.8ms,时间分辨率翻倍)
 const MIN_BIN: usize = 4;        // 40Hz @44.1k
 const MAX_BIN: usize = 800;      // 8kHz(避开噪声高频)
-const MAG_THRESHOLD: f32 = 0.0015; // 峰值绝对阈值(-56dB)
-const MISS_GRACE: u8 = 3;        // 音符允许短暂消失的帧数
-const MIN_DUR: f32 = 0.03;       // 最短音符 30ms
+const MAG_THRESHOLD: f32 = 0.001; // 峰值绝对阈值(-60dB,更灵敏,轻音也能捡)
+const MISS_GRACE: u8 = 5;        // 音符允许短暂消失的帧数(更宽容)
+const MIN_DUR: f32 = 0.015;      // 最短音符 15ms(更短音也能捡)
 
 struct ActiveNote { midi: u8, start: usize, last: usize, miss: u8, peak_mag: f32, bright_sum: f32, bright_n: usize }
 
@@ -32,8 +32,8 @@ pub struct AnalysisResult {
     pub duration_sec: f32,
 }
 
-/// 对单声道样本扒谱。mono 采样率应与 sr 一致。
-pub fn transcribe(mono: &[f32], sr: u32) -> AnalysisResult {
+/// 对单声道样本扒谱。mono 采样率应与 sr 一致。on_progress 报告 0..1 进度(约每 32 帧一次)。
+pub fn transcribe(mono: &[f32], sr: u32, on_progress: &mut dyn FnMut(f32)) -> AnalysisResult {
     let mut notes: Vec<DetectedNote> = Vec::new();
     if mono.len() < FRAME || sr == 0 { return AnalysisResult { notes, bpm: 0.0, duration_sec: mono.len() as f32 / sr.max(1) as f32 }; }
 
@@ -41,8 +41,13 @@ pub fn transcribe(mono: &[f32], sr: u32) -> AnalysisResult {
     let bin_hz = sr as f32 / FRAME as f32;
 
     let mut active: Vec<ActiveNote> = Vec::new();
+    let mut last_report = 0usize;
 
     for f in 0..n_frames {
+        if f - last_report >= 32 {
+            last_report = f;
+            on_progress(f as f32 / n_frames as f32);
+        }
         let off = f * HOP;
         let frame: Vec<f32> = if off + FRAME <= mono.len() {
             mono[off..off + FRAME].to_vec()
@@ -133,6 +138,7 @@ pub fn transcribe(mono: &[f32], sr: u32) -> AnalysisResult {
     for a in active {
         push_note(&mut notes, &a, last_frame, sr);
     }
+    on_progress(1.0);
 
     let bpm = estimate_bpm(&notes);
     AnalysisResult {
@@ -166,19 +172,27 @@ fn estimate_attack_ms(a: &ActiveNote, sr: u32) -> f32 {
     ms
 }
 
-// BPM 估计:音符起始间隔中位数(取 0.2-2s 区间)
+// BPM 估计:音符起始间隔直方图聚类(0.1-3s,0.05s 分箱)取最大簇,再归一化到 30-300 BPM 合理区间
 fn estimate_bpm(notes: &[DetectedNote]) -> f32 {
     let mut ts: Vec<f32> = notes.iter().map(|n| n.t).collect();
     ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mut gaps: Vec<f32> = Vec::new();
+    let mut bins: Vec<(f32, usize)> = Vec::new();   // (间隔秒, 计数)
     for w in ts.windows(2) {
         let g = w[1] - w[0];
-        if g > 0.2 && g < 2.0 { gaps.push(g); }
+        if g >= 0.1 && g <= 3.0 {
+            match bins.iter_mut().find(|(bg, _)| (bg - g).abs() < 0.05) {
+                Some(b) => b.1 += 1,
+                None => bins.push((g, 1)),
+            }
+        }
     }
-    if gaps.is_empty() { return 0.0; }
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med = gaps[gaps.len() / 2];
-    60.0 / med
+    if bins.is_empty() { return 0.0; }
+    bins.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.partial_cmp(&b.0).unwrap()));
+    let mut bpm = 60.0 / bins[0].0;
+    // 归一化到合理范围(避免倍速/半速误判)
+    while bpm > 300.0 { bpm /= 2.0; }
+    while bpm < 30.0 { bpm *= 2.0; }
+    bpm
 }
 
 #[cfg(test)]
@@ -203,7 +217,7 @@ mod tests {
     fn detects_single_note_pitch_and_duration() {
         let sr = 44100u32;
         let mono = synth(&[69], 1.0, sr, 0.005);   // A4 1 秒
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         assert!(!r.notes.is_empty(), "should detect notes, got {}", r.notes.len());
         let n = &r.notes[0];
         assert_eq!(n.midi, 69, "A4 detected, got {}", n.midi);
@@ -216,7 +230,7 @@ mod tests {
     fn detects_chord_multipitch() {
         let sr = 44100u32;
         let mono = synth(&[60, 64, 67], 0.8, sr, 0.005);   // C4 E4 G4 和弦
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         let midis: Vec<u8> = r.notes.iter().map(|n| n.midi).collect();
         assert!(midis.contains(&60) && midis.contains(&64) && midis.contains(&67),
             "chord notes detected, got {:?}", midis);
@@ -226,7 +240,7 @@ mod tests {
     fn silence_produces_no_notes() {
         let sr = 44100u32;
         let mono = vec![0.0f32; sr as usize];
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         assert!(r.notes.is_empty(), "silence -> no notes, got {}", r.notes.len());
     }
 
@@ -236,7 +250,7 @@ mod tests {
         let mut mono = synth(&[36], 0.6, sr, 0.005);   // C2 低音
         let high = synth(&[84], 0.6, sr, 0.005);       // C6 高音
         for i in 0..high.len() { mono[i] += high[i]; }
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         let low = r.notes.iter().find(|n| n.midi == 36);
         let hi = r.notes.iter().find(|n| n.midi == 84);
         assert!(low.is_some() && hi.is_some(), "both octaves detected");
@@ -250,7 +264,7 @@ mod tests {
         // 隔离验证:单独 E4(329Hz)能否检出(排除上下文/余音干扰)
         let sr = 44100u32;
         let mono = synth(&[64], 0.6, sr, 0.005);
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         let got: Vec<(u8, f32)> = r.notes.iter().map(|n| (n.midi, n.t)).collect();
         assert!(r.notes.iter().any(|n| n.midi == 64), "E4 alone must be detected, got {got:?}");
     }
@@ -271,7 +285,7 @@ mod tests {
                 mono[i] += (std::f32::consts::TAU * f * t).sin() * 0.4 * env;
             }
         }
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         let got: Vec<(u8, f32, f32)> = r.notes.iter().map(|n| (n.midi, n.t, n.dur)).collect();
         assert!(r.notes.iter().any(|n| n.midi == 62), "D4 detected, got {got:?}");
         assert!(r.notes.iter().any(|n| n.midi == 64), "E4 detected after D4, got {got:?}");
@@ -295,7 +309,7 @@ mod tests {
                 mono[i] += (std::f32::consts::TAU * f * t).sin() * 0.4 * env;
             }
         }
-        let r = transcribe(&mono, sr);
+        let r = transcribe(&mono, sr, &mut |_| {});
         let got: Vec<(u8, f32)> = r.notes.iter().map(|x| (x.midi, x.t)).collect();
         assert!(got.len() >= 4, "should detect 4 notes, got {got:?}");
         // 按时间排序后检查音高序列

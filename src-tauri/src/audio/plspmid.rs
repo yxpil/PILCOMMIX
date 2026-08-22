@@ -30,7 +30,7 @@ pub struct PlspNote {
 pub struct PlspMid {
     pub division: u32,
     pub us_per_quarter: u32,
-    pub beats_per_bar: u8,
+    pub beats_per_bar: u16,   // 拍号分子 1-256(v2;v1 为 u8)
     pub tones: Vec<PlspTone>,
     pub notes: Vec<PlspNote>,
 }
@@ -44,10 +44,10 @@ impl Default for PlspMid {
 pub fn encode(p: &PlspMid) -> Vec<u8> {
     let mut b: Vec<u8> = Vec::with_capacity(64 + p.tones.len() * 64 + p.notes.len() * 8);
     b.extend_from_slice(PLSP_MAGIC);
-    b.push(1);   // version
+    b.push(2);   // version 2:beats_per_bar 升 u16(拍号 1-256 全支持)
     b.extend_from_slice(&p.division.to_le_bytes());
     b.extend_from_slice(&p.us_per_quarter.to_le_bytes());
-    b.push(p.beats_per_bar);
+    b.extend_from_slice(&p.beats_per_bar.to_le_bytes());
     b.extend_from_slice(&(p.tones.len() as u16).to_le_bytes());
     b.extend_from_slice(&(p.notes.len() as u32).to_le_bytes());
     for t in &p.tones {
@@ -76,14 +76,20 @@ pub fn decode(bytes: &[u8]) -> Result<PlspMid, String> {
     if bytes.len() < 24 { return Err(".plspmid 文件过短".into()); }
     if &bytes[0..8] != PLSP_MAGIC { return Err("不是 .plspmid 文件(魔数缺失)".into()); }
     let mut pos = 8usize;
-    let _version = bytes[pos]; pos += 1;
+    let version = bytes[pos]; pos += 1;
     let rd_u32 = |pos: &mut usize| -> u32 {
         let v = u32::from_le_bytes([bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3]]);
         *pos += 4; v
     };
     p.division = rd_u32(&mut pos);
     p.us_per_quarter = rd_u32(&mut pos);
-    p.beats_per_bar = bytes[pos]; pos += 1;
+    if version >= 2 {
+        p.beats_per_bar = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]);
+        pos += 2;
+    } else {
+        p.beats_per_bar = bytes[pos] as u16;   // v1 兼容:u8
+        pos += 1;
+    }
     let n_tones = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]) as usize; pos += 2;
     let n_notes = rd_u32(&mut pos) as usize;
     if p.division == 0 { return Err("division 非法".into()); }
@@ -145,14 +151,14 @@ pub fn encode_from_json(
     notes_json: &str,
     tones_json: &str,
     bpm: f32,
-    beats_per_bar: u8,
+    beats_per_bar: u16,
 ) -> Result<Vec<u8>, String> {
     let notes: Vec<serde_json::Value> = serde_json::from_str(notes_json).map_err(|e| format!("音符数据解析失败: {e}"))?;
     let tones: Vec<serde_json::Value> = serde_json::from_str(tones_json).map_err(|e| format!("音色数据解析失败: {e}"))?;
     let mut plsp = PlspMid::default();
     plsp.division = PLSP_DIVISION;   // 1920:密度 4 倍
     plsp.us_per_quarter = if bpm > 1.0 { (60_000_000.0 / bpm) as u32 } else { 500_000 };
-    plsp.beats_per_bar = beats_per_bar.max(1).min(16);
+    plsp.beats_per_bar = beats_per_bar.clamp(1, 256);   // 拍号 1/4 2/4 ... 256/4 全支持
     for t in tones {
         let track = t["track"].as_u64().unwrap_or(0) as u8;
         let wave_type = t["waveType"].as_str().unwrap_or("saw").to_string();

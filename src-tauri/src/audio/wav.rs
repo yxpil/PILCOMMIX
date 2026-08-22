@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(w.mono.len(), n);
 
         // 扒谱
-        let r = crate::audio::analyze::transcribe(&w.mono, w.sample_rate);
+        let r = crate::audio::analyze::transcribe(&w.mono, w.sample_rate, &mut |_| {});
         assert!(r.notes.iter().any(|x| x.midi == 60), "C4 detected");
         assert!(r.notes.iter().any(|x| x.midi == 64), "E4 detected");
         assert!(r.bpm > 0.0, "bpm estimated");

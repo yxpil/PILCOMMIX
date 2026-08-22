@@ -418,10 +418,18 @@ fn wav_stop(audio: State<AudioState>) {
 /// 自动扒谱 + 音色匹配:解析 WAV → 音符检测(多音高/时值/力度)→ 音区自动分轨 → 每轨音色匹配
 /// 返回 JSON:{ bpm, duration, notes:[{t,dur,midi,vel,track,bright,attackMs}], tones:[{track,waveType,params:{}}] }
 #[tauri::command]
-fn analyze_wav(bytes_base64: String) -> Result<String, String> {
+fn analyze_wav(app: tauri::AppHandle, bytes_base64: String) -> Result<String, String> {
     let bytes = base64_decode(&bytes_base64)?;
     let w = audio::audio_to_mono(&bytes)?;
-    let r = audio::analyze::transcribe(&w.mono, w.sample_rate);
+    let mut progress = 0.0f32;
+    let r = audio::analyze::transcribe(&w.mono, w.sample_rate, &mut |pct| {
+        // 进度按 10% 粒度上报,避免事件风暴
+        if pct - progress >= 0.1 || pct >= 1.0 {
+            progress = pct;
+            let _ = app.emit("analyze-progress", pct);
+        }
+    });
+    let _ = app.emit("analyze-progress", 1.0);
     // 按音区轨分组 → 每轨音色匹配
     use std::collections::BTreeMap;
     let mut by_track: BTreeMap<u8, Vec<audio::analyze::DetectedNote>> = BTreeMap::new();
@@ -452,7 +460,7 @@ fn analyze_wav(bytes_base64: String) -> Result<String, String> {
 
 /// 编码 .plspmid(notes/tones 为 analyze_wav 返回的 JSON 数组字符串;bpm 换算 us_per_quarter)
 #[tauri::command]
-fn plspmid_encode(notes_json: String, tones_json: String, bpm: f32, beats_per_bar: u8) -> Result<String, String> {
+fn plspmid_encode(notes_json: String, tones_json: String, bpm: f32, beats_per_bar: u16) -> Result<String, String> {
     let bytes = audio::plspmid::encode_from_json(&notes_json, &tones_json, bpm, beats_per_bar)?;
     Ok(base64_encode(&bytes))
 }

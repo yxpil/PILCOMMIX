@@ -305,12 +305,24 @@ $id("btn-wav-play").addEventListener("click", () => {
 });
 $id("btn-wav-stop").addEventListener("click", () => { ra.wavStop(); toast("已停止试听"); });
 
-// 自动扒谱 + 音色匹配(Rust 傅里叶分析)
+// 自动扒谱 + 音色匹配(Rust 暴力傅里叶:hop 256 时间分辨率翻倍,阈值 -60dB 更灵敏,进度事件上报)
+let analyzeUnlisten: (() => void) | null = null;
 $id("btn-wav-analyze").addEventListener("click", async () => {
   if (!wavB64) { toast("请先打开 WAV"); return; }
   const btn = $id("btn-wav-analyze") as HTMLButtonElement;
+  const prog = $id("analyze-progress") as HTMLProgressElement;
   btn.disabled = true;
   btn.textContent = "扒谱中…";
+  prog.style.display = "block";
+  prog.value = 0;
+  // 进度事件:暴力傅里叶分帧推进,实时刷新进度条与状态
+  analyzeUnlisten?.();
+  analyzeUnlisten = await listen<number>("analyze-progress", (e) => {
+    const pct = Math.round((e.payload as number) * 100);
+    prog.value = pct;
+    btn.textContent = `扒谱中 ${pct}%`;
+    wavStatus(`扒谱中 ${pct}%…(暴力傅里叶逐帧匹配)`);
+  });
   try {
     const json = await ra.analyzeWav(wavB64);
     const a = JSON.parse(json) as NonNullable<typeof analysis>;
@@ -321,8 +333,11 @@ $id("btn-wav-analyze").addEventListener("click", async () => {
   } catch (e) {
     toast("扒谱失败: " + String(e).slice(0, 60));
   }
+  analyzeUnlisten?.();
+  analyzeUnlisten = null;
   btn.disabled = false;
   btn.textContent = "自动扒谱";
+  prog.style.display = "none";
 });
 
 // 扒谱结果 → 简谱(按音区轨分组,时间轴对齐)

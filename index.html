@@ -855,14 +855,14 @@
               </div>
               <div class="wav-row2" style="margin-top:6px">
                 <label class="ctrl-label">拍号</label>
-                <select id="wav-beats" class="midi-select" style="width:70px">
-                  <option value="4">4/4</option><option value="3">3/4</option>
-                  <option value="6">6/8</option><option value="2">2/4</option>
-                </select>
+                <input type="number" id="wav-beats" min="1" max="256" value="4" style="width:60px;background:transparent;border:1px solid rgba(var(--rgb-line),0.25);color:var(--text);border-radius:4px;padding:2px 6px" title="每小节拍数(1-256:1/4 到 256/4 全支持,机器不怕暴力拍号)" />
+                <span class="vel-hint">拍/小节(1-256)</span>
+              </div>
                 <button class="tool-btn" id="btn-wav-save-plsp">保存 .plspmid</button>
                 <button class="tool-btn" id="btn-plsp-open">打开 .plspmid</button>
                 <button class="tool-btn" id="btn-plsp-play">播放 .plspmid</button>
               </div>
+              <progress id="analyze-progress" max="100" value="0" style="display:none;width:100%;height:6px;margin-top:6px"></progress>
             </div>
             <div class="wav-status" id="wav-status">WAV 导入 → widi 式自动扒谱(傅里叶分析)→ 音色匹配 → 超高密度 .plspmid(32 轨 × 1920 ticks/四分音符)</div>
 
