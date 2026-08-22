@@ -531,7 +531,15 @@ fn plspmid_save(bytes_base64: String) -> Result<(), String> {
 #[tauri::command]
 fn plspmid_play(app: tauri::AppHandle, audio: State<AudioState>, bytes_base64: String) -> Result<(), String> {
     let bytes = base64_decode(&bytes_base64)?;
-    let plsp = audio::plspmid::decode(&bytes)?;
+    let mut plsp = audio::plspmid::decode(&bytes)?;
+    // 力度相对归一:文件力度整体偏低时补偿(最响音符 = 127,最低 6,保证可闻)
+    let max_vel = plsp.notes.iter().map(|n| n.vel as u32).max().unwrap_or(0).max(1);
+    if max_vel > 1 {
+        for n in plsp.notes.iter_mut() {
+            let v = (n.vel as f32 / max_vel as f32) * 127.0;
+            n.vel = v.round().clamp(6.0, 127.0) as u8;
+        }
+    }
     // 灌音色:wave_type + 参数(键名 camelCase)应用到 32 轨通道
     {
         let mut b = audio.bus.lock().map_err(|e| e.to_string())?;

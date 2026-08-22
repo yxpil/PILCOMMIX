@@ -138,6 +138,13 @@ pub fn transcribe(mono: &[f32], sr: u32, on_progress: &mut dyn FnMut(f32)) -> An
     for a in active {
         push_note(&mut notes, &a, last_frame, sr);
     }
+    // 力度相对归一:最响音符 = 1.0(避免整体响度偏低 → 保存后播放几乎无声)
+    let max_vel = notes.iter().map(|n| n.vel).fold(0.0f32, f32::max);
+    if max_vel > 0.01 {
+        for n in notes.iter_mut() {
+            n.vel = (n.vel / max_vel).clamp(0.05, 1.0);
+        }
+    }
     on_progress(1.0);
 
     let bpm = estimate_bpm(&notes);

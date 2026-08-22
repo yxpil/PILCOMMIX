@@ -442,6 +442,8 @@ $id("btn-plsp-open").addEventListener("click", async () => {
       tones: { track: number; waveType: string; params: Record<string, number> }[];
     };
     const spT = j.usPerQuarter / 1e6 / j.division;   // 秒/tick
+    // 力度相对归一:文件力度整体偏低时补偿(最响音符 = 1,最低 0.08,弹琴/简谱力度可闻)
+    const maxVel = Math.max(...j.notes.map((n) => n.vel), 1);
     const a = {
       bpm: j.bpm,
       duration: j.durationSec,
@@ -450,7 +452,7 @@ $id("btn-plsp-open").addEventListener("click", async () => {
         t: n.tick * spT,
         dur: Math.max(0.01, n.dur * spT),
         midi: n.midi,
-        vel: Math.min(1, n.vel / 127),
+        vel: Math.min(1, Math.max(0.08, n.vel / maxVel)),
         track: n.track,
         bright: 0.5,      // plspmid 无特征数据,占位
         attackMs: 0,
