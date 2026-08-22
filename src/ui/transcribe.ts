@@ -222,6 +222,23 @@ $id("btn-trans-play").addEventListener("click", () => {
   transcribePlay();
 });
 
+// 清空:停止播放 + 清空 MIDI/.plspmid 状态与显示
+$id("btn-trans-clear").addEventListener("click", () => {
+  stopPlaybackCleanup();          // 停止 + 恢复通道音量 + 清理播放定时器
+  transState.smf = null;
+  transState.smfBytes = null;
+  transState.fileName = "";
+  transState.notes = [];
+  plspB64 = "";
+  analysis = null;
+  lastOpenedFile = null;
+  $id("trans-output").textContent = "";
+  $id("trans-status").textContent = "已清空 — 打开 MIDI 或 .plspmid 文件";
+  $id("trans-status").classList.remove("on");
+  wavStatus("WAV 导入 → widi 式自动扒谱(傅里叶分析)→ 音色匹配 → 超高密度 .plspmid(32 轨 × 1920 ticks/四分音符)");
+  toast("已清空");
+});
+
 // 恢复通道音量(播放结束/停止时;覆盖 64 通道,与引擎分身上限一致)
 function restoreChVolumes() {
   for (let ch = 0; ch < 64; ch++) ra.setChannel(ch, 1.0, false);
