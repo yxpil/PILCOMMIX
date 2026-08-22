@@ -106,6 +106,8 @@ export function renderSmfJianpu(smf: NonNullable<typeof transState.smf>, el: HTM
 }
 
 // ============ 标准 MIDI 文件(SMF)解析 ============
+// 最近打开的文件类型:控制"播放"按钮路由(MIDI ↔ .plspmid,都点"播放"即可)
+let lastOpenedFile: "midi" | "plspmid" | null = null;
 $id("btn-trans-open").addEventListener("click", async () => {
   try {
     const [b64, name] = await invoke<[string, string]>("open_midi");
@@ -117,6 +119,7 @@ $id("btn-trans-open").addEventListener("click", async () => {
     transState.smfBytes = bytes;   // 播放走 Rust(采样级),保留原始字节
     transState.fileName = name;
     transState.notes = [];
+    lastOpenedFile = "midi";
     const bpm = Math.round(60000000 / parsed.usPerQuarter);
     const nCh = new Set([...parsed.notes.map((n) => n.ch), ...parsed.programChanges.map((p) => p.ch)]).size;
     $id("trans-status").textContent =
@@ -213,7 +216,11 @@ export async function transcribePlay() {
   };
   playUiTimers.push(window.setTimeout(drive, 250));
 }
-$id("btn-trans-play").addEventListener("click", () => { transcribePlay(); });
+$id("btn-trans-play").addEventListener("click", () => {
+  // 智能路由:最近打开 .plspmid → 播 .plspmid(用文件内音色);否则播 MIDI
+  if (lastOpenedFile === "plspmid" && plspB64) { playPlspmid(); return; }
+  transcribePlay();
+});
 
 // 恢复通道音量(播放结束/停止时;覆盖 64 通道,与引擎分身上限一致)
 function restoreChVolumes() {
@@ -434,6 +441,7 @@ $id("btn-plsp-open").addEventListener("click", async () => {
       tones: j.tones,
     };
     analysis = a;   // 应用匹配音色/保存也基于此
+    lastOpenedFile = "plspmid";   // "播放"按钮路由到 .plspmid
     // 读取文件内音色:每轨音色参数自动灌入对应通道引擎(弹琴/播放都能听到文件音色,不必手动"应用匹配音色")
     let applied = 0;
     for (const t of a.tones) {
@@ -452,12 +460,14 @@ $id("btn-plsp-open").addEventListener("click", async () => {
 });
 
 // 播放 .plspmid(Rust 解码 → 每轨音色灌入 32 通道引擎 → 采样级调度)
-$id("btn-plsp-play").addEventListener("click", () => {
+function playPlspmid() {
   if (!plspB64) { toast("请先打开 .plspmid"); return; }
   ra.audioStart().catch(() => {});
   ra.smfStop();
   playUiCleanup();
   ra.plspmidPlay(plspB64).then(() => {
+    // 播放状态走统一状态栏;停止/清空用现有按钮(Rust 同一播放器,smfStop 可停)
     wavStatus(".plspmid 播放中(32 轨采样级调度)");
   }).catch((e) => toast("播放失败: " + String(e).slice(0, 60)));
-});
+}
+$id("btn-plsp-play").addEventListener("click", () => playPlspmid());
