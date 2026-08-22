@@ -1,6 +1,7 @@
 // 示波器 + 输出电平表(VU):数据来自 Rust 音频线程("scope" 事件,post-drive 时域样本)
 import { listen } from "@tauri-apps/api/event";
 import { $id } from "./dom";
+import { traceColor, lineColor } from "./theme";
 export const scopeCanvas = $id("scope-canvas") as HTMLCanvasElement;
 export const scopeCtx = scopeCanvas.getContext("2d")!;
 let scopeMode: "wave" | "spec" = "wave";
@@ -103,20 +104,20 @@ export function scopeDraw() {
   if (scopeMode === "spec") {
     const bins = 96;
     const bw = cw / bins;
-    scopeCtx.fillStyle = "#7dff9b";
+    scopeCtx.fillStyle = traceColor();
     for (let i = 0; i < bins; i++) {
       const v = Math.log10(1 + latestSpec[i] * 60) / 1.3;   // 对数压缩(Rust FFT 数据)
       const h = Math.max(1, Math.min(ch, v * ch));
       scopeCtx.fillRect(i * bw, ch - h, bw - 1, h);
     }
-    scopeCtx.fillStyle = "rgba(149,213,178,0.35)";
+    scopeCtx.fillStyle = lineColor(0.35);
     scopeCtx.font = "10px sans-serif";
     scopeCtx.fillText("频谱", 6, 12);
     scopeRaf = requestAnimationFrame(scopeDraw);
     return;
   }
   // 中心线
-  scopeCtx.strokeStyle = "rgba(149,213,178,0.25)";
+  scopeCtx.strokeStyle = lineColor(0.25);
   scopeCtx.lineWidth = 1;
   scopeCtx.beginPath();
   scopeCtx.moveTo(0, ch / 2);
@@ -126,7 +127,7 @@ export function scopeDraw() {
   let peak = 0.0;
   for (const v of data) { const a = Math.abs(v); if (a > peak) peak = a; }
   if (peak < 1e-4) {
-    scopeCtx.fillStyle = "rgba(149,213,178,0.35)";
+    scopeCtx.fillStyle = lineColor(0.35);
     scopeCtx.font = "10px sans-serif";
     scopeCtx.fillText(scopeGrab ? "静音(等待信号…)" : "静音", 6, 12);
     scopeRaf = requestAnimationFrame(scopeDraw);
@@ -168,9 +169,9 @@ export function scopeDraw() {
         grabbed = true;
         const cache = grabCache!;
         const freq = 44100 / period;
-        scopeCtx.strokeStyle = "#7dff9b";
+        scopeCtx.strokeStyle = traceColor();
         scopeCtx.lineWidth = 2.2;
-        scopeCtx.shadowColor = "rgba(125,255,155,0.45)";
+        scopeCtx.shadowColor = traceColor(0.45);
         scopeCtx.shadowBlur = 6;
         scopeCtx.beginPath();
         // 画 2 个周期(水平铺满画布),数据来自缓存(稳定画面)
@@ -187,7 +188,7 @@ export function scopeDraw() {
         }
         scopeCtx.stroke();
         scopeCtx.shadowBlur = 0;
-        scopeCtx.fillStyle = "rgba(149,213,178,0.6)";
+        scopeCtx.fillStyle = traceColor(0.6);
         scopeCtx.font = "10px sans-serif";
         scopeCtx.fillText("抓取:周期 " + period + " 采样 ≈ " + freq.toFixed(1) + "Hz", 6, 12);
       }
@@ -206,9 +207,9 @@ export function scopeDraw() {
       for (const v of data) { const a = Math.abs(v); if (a > peak) peak = a; }
       if (peak > 1e-4) scale *= 0.9 / peak;   // 峰值拉到画布 90% 高度
     }
-    scopeCtx.strokeStyle = "#7dff9b";
+    scopeCtx.strokeStyle = traceColor();
     scopeCtx.lineWidth = 1.6;
-    scopeCtx.shadowColor = "rgba(125,255,155,0.45)";
+    scopeCtx.shadowColor = traceColor(0.45);
     scopeCtx.shadowBlur = 6;
     scopeCtx.beginPath();
     const n = data.length;

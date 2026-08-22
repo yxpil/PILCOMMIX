@@ -210,6 +210,7 @@ pub struct Voice {
     pub pan: f32,
     pub env: Adsr,
     pub pedaled: bool,
+    pub sostened: bool,
     pub releasing: bool,
     // 通用波形路径
     pub phases: Vec<f64>,
@@ -269,7 +270,7 @@ impl Voice {
             midi, vel, t, on_t: t,
             freq, pan: p.pan,
             env: Adsr::new(p.attack, p.decay, p.sustain, p.release),
-            pedaled: false, releasing: false,
+            pedaled: false, sostened: false, releasing: false,
             phases: Vec::new(), spreads: Vec::new(),
             vibrato_phase: 0.0, sub_phase: 0.0,
             sub_level: p.sub_level, vibrato_rate: p.vibrato_rate, vibrato_depth: p.vibrato_depth,

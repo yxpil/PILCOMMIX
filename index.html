@@ -16,6 +16,12 @@
           <span class="tb-sub">合成器</span>
         </div>
         <div class="tb-right">
+          <div class="theme-switch" id="theme-switch" title="主题:墨绿/黑白/粉色/蓝色">
+            <button class="theme-btn" data-theme="default" title="墨绿(默认)"></button>
+            <button class="theme-btn" data-theme="black" title="黑白"></button>
+            <button class="theme-btn" data-theme="pink" title="粉色"></button>
+            <button class="theme-btn" data-theme="blue" title="蓝色"></button>
+          </div>
           <button class="win-btn tb-update" id="btn-check-update" title="检查更新" style="display:none">更新</button>
           <button class="win-btn" id="btn-min" title="最小化">
             <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1" y1="5.5" x2="10" y2="5.5" stroke="currentColor" stroke-width="1.3"/></svg>
@@ -28,6 +34,26 @@
           </button>
         </div>
       </header>
+
+      <!-- SVG 图标库(线性风格,stroke=currentColor 随主题/悬停变色) -->
+      <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="i-play" viewBox="0 0 16 16"><path class="ic-fill" d="M4.5 2.8 L13 8 L4.5 13.2 Z"/></symbol>
+        <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3.8" y="3.8" width="8.4" height="8.4" rx="1.2"/></symbol>
+        <symbol id="i-rec" viewBox="0 0 16 16"><circle class="ic-fill" cx="8" cy="8" r="4.2"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2 V12.8 M3.2 8 H12.8"/></symbol>
+        <symbol id="i-minus" viewBox="0 0 16 16"><path d="M3.2 8 H12.8"/></symbol>
+        <symbol id="i-clear" viewBox="0 0 16 16"><path d="M4.2 4.2 L11.8 11.8 M11.8 4.2 L4.2 11.8"/></symbol>
+        <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.2 A1.6 1.6 0 0 1 3.4 2.6 H6 L7.4 4 H12.6 A1.6 1.6 0 0 1 14.2 5.6 V11.4 A1.6 1.6 0 0 1 12.6 13 H3.4 A1.6 1.6 0 0 1 1.8 11.4 Z"/></symbol>
+        <symbol id="i-save" viewBox="0 0 16 16"><path d="M2.4 2.8 H11.2 L13.6 5.2 V13.2 H2.4 Z M5.2 2.8 V6.4 H10.4 V2.8 M5.2 13.2 V9.6 H10.4 V13.2"/></symbol>
+        <symbol id="i-new" viewBox="0 0 16 16"><path d="M2.2 2.4 H8 L10.2 4.6 V13.6 H2.2 Z M12.4 6.4 V10.8 M10.2 8.6 H14.6"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.6 4.4 H13.4 M6 2.4 H10 M4.4 4.4 V13.2 H11.6 V4.4 M6.6 6.6 V10.8 M9.4 6.6 V10.8"/></symbol>
+        <symbol id="i-pencil" viewBox="0 0 16 16"><path d="M2.6 13.4 L3.4 10.6 L10.4 3.6 L12.4 5.6 L5.4 12.6 Z M9.2 4.8 L11.2 6.8"/></symbol>
+        <symbol id="i-reset" viewBox="0 0 16 16"><path d="M13.6 8 A5.6 5.6 0 1 1 10.4 3 M10.4 3 H13.6 V5.8"/></symbol>
+        <symbol id="i-smooth" viewBox="0 0 16 16"><path d="M2 12.4 C4.5 8.4 6.5 4.2 9.5 6 C11.6 7.3 12.8 5.4 14 4"/></symbol>
+        <symbol id="i-grab" viewBox="0 0 16 16"><path d="M5 3.5 V12.5 M8 3.5 V12.5 M11 3.5 V12.5"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 16 16"><path d="M5 7 V5 A3 3 0 0 1 11 5 V7 M3.8 7 H12.2 V13 H3.8 Z"/></symbol>
+        <symbol id="i-mute" viewBox="0 0 16 16"><path d="M2.4 6.2 H5.2 L8.6 3.4 V12.6 L5.2 9.8 H2.4 Z M10.4 6.2 L13.4 9.2 M13.4 6.2 L10.4 9.2"/></symbol>
+      </svg>
 
       <!-- 更新横幅(发现新版本时显示) -->
       <div class="update-banner" id="update-banner" style="display:none">
@@ -70,8 +96,8 @@
             <div class="wave-hint" id="wave-hint">按住拖动画波形 · 拖锚点微调 · 右键删除锚点</div>
           </div>
           <div class="wave-tools">
-            <button class="tool-btn" id="btn-smooth">平滑曲线</button>
-            <button class="tool-btn" id="btn-reset-wave">重置波形</button>
+            <button class="tool-btn" id="btn-smooth"><svg class="ic"><use href="#i-smooth"/></svg>平滑曲线</button>
+            <button class="tool-btn" id="btn-reset-wave"><svg class="ic"><use href="#i-reset"/></svg>重置波形</button>
             <span class="tool-spacer"></span>
             <label class="tool-label">谐波 <input type="range" id="harmonics" min="4" max="64" value="32" /></label>
           </div>
@@ -117,28 +143,40 @@
           <div class="ctrl-row">
             <label class="ctrl-label">八度</label>
             <div class="octave-ctrl">
-              <button class="mini-btn" id="oct-down">-</button>
+              <button class="mini-btn" id="oct-down" title="八度降低"><svg class="ic"><use href="#i-minus"/></svg></button>
               <span class="octave-val" id="octave-val">C3</span>
-              <button class="mini-btn" id="oct-up">+</button>
+              <button class="mini-btn" id="oct-up" title="八度升高"><svg class="ic"><use href="#i-plus"/></svg></button>
             </div>
           </div>
 
-          <!-- 分类选项卡 -->
+          <!-- 分类选项卡(逻辑分组:音色 / 演奏 / 映射 / 文件,右侧复位独立) -->
           <div class="tab-bar" id="tab-bar">
-            <button class="tab-btn active" data-tab="tone">音色</button>
-            <button class="tab-btn" data-tab="wt">渐变</button>
-            <button class="tab-btn" data-tab="env">包络</button>
-            <button class="tab-btn" data-tab="play">演奏</button>
-            <button class="tab-btn" data-tab="metro">节拍</button>
-            <button class="tab-btn" data-tab="scope">示波器</button>
-            <button class="tab-btn" data-tab="vel">力度</button>
-            <button class="tab-btn" data-tab="smart">智能优化</button>
-            <button class="tab-btn" data-tab="map">音色映射</button>
-            <button class="tab-btn" data-tab="ccmap">旋钮映射</button>
-            <button class="tab-btn" data-tab="test">测试</button>
+            <span class="tab-group">
+              <button class="tab-btn active" data-tab="tone">音色</button>
+              <button class="tab-btn" data-tab="wt">渐变</button>
+              <button class="tab-btn" data-tab="env">包络</button>
+            </span>
+            <span class="tab-sep"></span>
+            <span class="tab-group">
+              <button class="tab-btn" data-tab="play">演奏</button>
+              <button class="tab-btn" data-tab="metro">节拍</button>
+              <button class="tab-btn" data-tab="scope">示波器</button>
+              <button class="tab-btn" data-tab="vel">力度</button>
+            </span>
+            <span class="tab-sep"></span>
+            <span class="tab-group">
+              <button class="tab-btn" data-tab="smart">智能优化</button>
+              <button class="tab-btn" data-tab="map">音色映射</button>
+              <button class="tab-btn" data-tab="ccmap">旋钮映射</button>
+              <button class="tab-btn" data-tab="test">测试</button>
+            </span>
+            <span class="tab-sep"></span>
+            <span class="tab-group">
+              <button class="tab-btn" data-tab="trans">转录</button>
+              <button class="tab-btn" data-tab="rec">录音</button>
+            </span>
+            <span class="tab-sep"></span>
             <button class="tab-btn reset-tab" id="btn-reset-all" title="全部参数恢复默认(傻瓜模式:按下琴键即出默认音)">复位</button>
-            <button class="tab-btn" data-tab="trans">转录</button>
-            <button class="tab-btn" data-tab="rec">录音</button>
           </div>
 
           <!-- 音色:合成器参数 + 钢琴/水滴专属参数 -->
@@ -554,7 +592,7 @@
                 <span class="led sustain-led" id="sustain-led" title="延音踏板(CC64)状态"></span>
                 <span class="ctrl-val">CC64</span>
                 <label class="ctrl-label play-pan-label">琶音器</label>
-                <button class="mini-btn arp-btn" id="btn-arp">启动</button>
+                <button class="mini-btn arp-btn" id="btn-arp"><svg class="ic"><use href="#i-play"/></svg>启动</button>
               </div>
               <div class="play-row arp-row">
                 <label class="ctrl-label">琶音 BPM</label>
@@ -648,7 +686,7 @@
             </div>
             <div class="midi-out-row">
               <label class="ctrl-label">发声</label>
-              <button class="mini-btn" id="btn-mute">静音</button>
+              <button class="mini-btn" id="btn-mute"><svg class="ic"><use href="#i-mute"/></svg>静音</button>
             </div>
           </div>
 
@@ -658,7 +696,7 @@
               <div class="metro-head">
                 <span class="metro-title">节拍器</span>
                 <span class="led metro-led" id="metro-led" title="节拍指示灯"></span>
-                <button class="tool-btn metro-btn" id="btn-metro">启动</button>
+                <button class="tool-btn metro-btn" id="btn-metro"><svg class="ic"><use href="#i-play"/></svg>启动</button>
               </div>
               <div class="metro-row">
                 <label class="ctrl-label">速度</label>
@@ -678,11 +716,11 @@
             <div class="scope-toggle">
               <button class="mini-btn active" id="btn-scope-wave">波形</button>
               <button class="mini-btn" id="btn-scope-spec">频谱</button>
-              <button class="mini-btn" id="btn-scope-lock" title="冻结当前画面,看清细节">锁定</button>
+              <button class="mini-btn" id="btn-scope-lock" title="冻结当前画面,看清细节"><svg class="ic"><use href="#i-lock"/></svg>锁定</button>
               <button class="mini-btn" id="btn-scope-auto" title="自动缩放:波形峰值自动适配画布高度">AUTO</button>
-              <button class="mini-btn" id="btn-scope-zoomin" title="放大波形">+</button>
-              <button class="mini-btn" id="btn-scope-zoomout" title="缩小波形">-</button>
-              <button class="mini-btn" id="btn-scope-grab" title="抓波形:自动找到重复的周期并稳定显示(不闪)">抓波形</button>
+              <button class="mini-btn" id="btn-scope-zoomin" title="放大波形"><svg class="ic"><use href="#i-plus"/></svg></button>
+              <button class="mini-btn" id="btn-scope-zoomout" title="缩小波形"><svg class="ic"><use href="#i-minus"/></svg></button>
+              <button class="mini-btn" id="btn-scope-grab" title="抓波形:自动找到重复的周期并稳定显示(不闪)"><svg class="ic"><use href="#i-grab"/></svg>抓波形</button>
             </div>
             <div class="scope-wrap">
               <canvas id="scope-canvas"></canvas>
@@ -761,6 +799,16 @@
               <button class="tool-btn" id="btn-ccmap-add">绑定</button>
             </div>
             <div id="ccmap-list" class="map-list"></div>
+
+            <div class="vel-hint" style="margin-top:14px">键盘按键绑定:把 Del/End/Pause/小键盘等按键绑定到动作(按住=触发,松开=释放)。绑定优先于音符;未绑定的键仍当音符弹。</div>
+            <div class="map-add-row">
+              <label>按键</label>
+              <select id="kbdmap-key" class="midi-select" style="min-width:110px"></select>
+              <label>动作</label>
+              <select id="kbdmap-action" class="midi-select" style="min-width:140px"></select>
+              <button class="tool-btn" id="btn-kbdmap-add">绑定</button>
+            </div>
+            <div id="kbdmap-list" class="map-list"></div>
           </div>
 
           <!-- 测试:MIDI 输入监视(看自己按了什么旋钮/按钮) -->
@@ -768,7 +816,7 @@
             <div class="vel-hint">实时显示 MIDI 输入:按键盘/转旋钮/踩踏板,看消息与映射动作(未映射的会提示,方便绑定)。</div>
             <div class="test-current" id="test-current">-</div>
             <div class="test-actions">
-              <button class="tool-btn" id="btn-test-clear">清空</button>
+              <button class="tool-btn" id="btn-test-clear"><svg class="ic"><use href="#i-clear"/></svg>清空</button>
             </div>
             <div id="test-list" class="test-list"></div>
           </div>
@@ -781,20 +829,72 @@
                 <label class="ck"><input type="checkbox" id="loudness-match" checked /> 补齐音量差距(自动响度归一)</label>
                 <label class="ck"><input type="checkbox" id="lock-current-tone" /> 只用当前音色(忽略文件程序变更)</label>
               </div>
-              <button class="tool-btn" id="btn-trans-open">打开 MIDI 文件</button>
-              <button class="tool-btn" id="btn-trans-play">播放</button>
-              <button class="tool-btn" id="btn-trans-stop">停止</button>
-              <button class="tool-btn" id="btn-trans-clear">清空</button>
+              <button class="tool-btn" id="btn-trans-open"><svg class="ic"><use href="#i-folder"/></svg>打开 MIDI 文件</button>
+              <button class="tool-btn" id="btn-trans-play"><svg class="ic"><use href="#i-play"/></svg>播放</button>
+              <button class="tool-btn" id="btn-trans-stop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
+              <button class="tool-btn" id="btn-trans-clear"><svg class="ic"><use href="#i-clear"/></svg>清空</button>
             </div>
             <div class="trans-status" id="trans-status">打开 MIDI 文件,点播放(虚拟按键演奏,用当前音色)</div>
             <div class="trans-output" id="trans-output"></div>
+
+            <div class="wav-row" style="margin-top:12px;border-top:1px dashed rgba(149,213,178,0.15);padding-top:10px">
+              <div class="wav-row1">
+                <button class="tool-btn" id="btn-wav-open"><svg class="ic"><use href="#i-folder"/></svg>打开 WAV</button>
+                <button class="tool-btn" id="btn-wav-play"><svg class="ic"><use href="#i-play"/></svg>试听</button>
+                <button class="tool-btn" id="btn-wav-stop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
+                <button class="tool-btn" id="btn-wav-analyze">自动扒谱</button>
+                <button class="tool-btn" id="btn-wav-apply-tone">应用匹配音色</button>
+              </div>
+              <div class="wav-row2" style="margin-top:6px">
+                <label class="ctrl-label">拍号</label>
+                <select id="wav-beats" class="midi-select" style="width:70px">
+                  <option value="4">4/4</option><option value="3">3/4</option>
+                  <option value="6">6/8</option><option value="2">2/4</option>
+                </select>
+                <button class="tool-btn" id="btn-wav-save-plsp">保存 .plspmid</button>
+                <button class="tool-btn" id="btn-plsp-open">打开 .plspmid</button>
+                <button class="tool-btn" id="btn-plsp-play">播放 .plspmid</button>
+              </div>
+            </div>
+            <div class="wav-status" id="wav-status">WAV 导入 → widi 式自动扒谱(傅里叶分析)→ 音色匹配 → 超高密度 .plspmid(32 轨 × 1920 ticks/四分音符)</div>
+
+            <div class="proj-wrap" style="margin-top:12px;border-top:1px dashed rgba(149,213,178,0.15);padding-top:10px">
+              <div class="proj-row1">
+                <button class="tool-btn" id="btn-proj-new"><svg class="ic"><use href="#i-new"/></svg>新建工程</button>
+                <button class="tool-btn" id="btn-proj-open"><svg class="ic"><use href="#i-folder"/></svg>打开工程</button>
+                <button class="tool-btn" id="btn-proj-save"><svg class="ic"><use href="#i-save"/></svg>保存 .PILMU</button>
+                <button class="tool-btn" id="btn-proj-play"><svg class="ic"><use href="#i-play"/></svg>播放工程</button>
+                <button class="tool-btn" id="btn-proj-stop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
+              </div>
+              <div class="proj-row2" style="margin-top:6px">
+                <span class="ctrl-label">添加轨道</span>
+                <button class="tool-btn" id="btn-proj-add-plsp"><svg class="ic"><use href="#i-plus"/></svg>.plspmid</button>
+                <button class="tool-btn" id="btn-proj-add-mid"><svg class="ic"><use href="#i-plus"/></svg>MIDI</button>
+                <button class="tool-btn" id="btn-proj-add-wav"><svg class="ic"><use href="#i-plus"/></svg>WAV</button>
+                <button class="tool-btn" id="btn-proj-add-mp3"><svg class="ic"><use href="#i-plus"/></svg>MP3</button>
+                <button class="tool-btn" id="btn-proj-add-code"><svg class="ic"><use href="#i-pencil"/></svg>代码(音乐编程)</button>
+              </div>
+              <div class="proj-status" id="proj-status">多轨音乐工程 .PILMU(ZIP 无损压缩,可拖拽排序/编辑):MIDI + 超高密度 plspmid + WAV + MP3 + 代码轨混合</div>
+              <div id="proj-list" class="proj-list"></div>
+              <div id="code-editor" style="display:none;margin-top:8px">
+                <div class="ctrl-label">音乐编程代码(mcode)——代码定义音乐</div>
+                <textarea id="code-editor-src" spellcheck="false" style="width:100%;height:190px;background:#0a1412;color:var(--text);border:1px solid rgba(149,213,178,0.25);border-radius:6px;padding:8px;font-family:Consolas,monospace;font-size:12px;resize:vertical;line-height:1.5"></textarea>
+                <div style="margin-top:4px;display:flex;gap:6px;align-items:center">
+                  <button class="tool-btn" id="btn-code-save">确定(保存进工程)</button>
+                  <button class="tool-btn" id="btn-code-cancel">取消</button>
+                  <button class="tool-btn" id="btn-code-example">填入示例</button>
+                  <span id="code-err" style="font-size:11px;color:#ff7b7b"></span>
+                </div>
+                <div class="vel-hint">语法:use piano(音色 piano/saw/sine/clar/dx7/wt/square/drip)· tempo 120 · c4 1/4(音符+时值,midi 60 也可)· [c4 e4 g4] 1/2(和弦)· r 1/4(休止)· c4 1/4 v100(力度)· repeat 3 { ... }(重复)· track 贝斯 { use saw ... }(音轨)</div>
+              </div>
+            </div>
           </div>
 
           <!-- 录音:录制演奏 -->
           <div class="tab-body" id="tab-rec">
             <div class="rec-row">
               <button class="rec-btn" id="btn-record">
-                <svg class="rec-ico" width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="currentColor"/></svg>
+                <svg class="ic"><use href="#i-rec"/></svg>
                 <span>录音</span>
               </button>
               <button class="tool-btn" id="btn-save-midi">保存 MIDI</button>
@@ -816,6 +916,7 @@
       <footer class="kbd-status" id="kbd-status">
         <span class="led sustain-led" id="kbd-sustain-led" title="延音踏板(CC64)状态"></span>
         <span id="kbd-sustain-txt">延音</span>
+        <span id="kbd-bend">滑音 +0.00</span>
         <span id="midi-link-status" class="midi-link-status"></span>
       </footer>
       <footer class="keyboard" id="keyboard"></footer>
@@ -830,9 +931,6 @@
           <span class="track-time" id="track-time">00:00</span>
         </div>
       </div>
-
-      <!-- 按键映射提示 -->
-      <div class="keymap-hint" id="keymap-hint"></div>
 
     </div>
     <script type="module" src="/src/main.ts"></script>

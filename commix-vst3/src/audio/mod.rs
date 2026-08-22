@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 pub const BLOCK: usize = 256;
-pub const N_CHANNELS: usize = 16;
+pub const N_CHANNELS: usize = 64;   // 与 src-tauri 一致(多轨工程:plspmid 32 + 多条 MIDI 轨)
 
 // ============ 采样级播放事件(音频回调消费) ============
 #[derive(Clone, Debug)]
@@ -24,6 +24,8 @@ pub enum AudioEvent {
     NoteOff { ch: usize, midi: u8 },
     Bend { ch: usize, semitones: f32 },
     Sustain { ch: usize, on: bool },
+    Sostenuto { ch: usize, on: bool },
+    Soft { ch: usize, on: bool },
     AllOff { ch: usize },
 }
 
@@ -406,6 +408,8 @@ impl AudioBus {
                 AudioEvent::NoteOff { midi, .. } => eng.note_off(midi, false),
                 AudioEvent::Bend { semitones, .. } => eng.set_bend(semitones),
                 AudioEvent::Sustain { on, .. } => eng.set_sustain(on),
+                AudioEvent::Sostenuto { on, .. } => eng.set_sostenuto(on),
+                AudioEvent::Soft { on, .. } => eng.set_soft(on),
                 AudioEvent::AllOff { .. } => eng.all_off(),
             }
         }
@@ -552,6 +556,7 @@ impl AudioEvent {
         match self {
             AudioEvent::NoteOn { ch, .. } | AudioEvent::NoteOff { ch, .. }
             | AudioEvent::Bend { ch, .. } | AudioEvent::Sustain { ch, .. }
+            | AudioEvent::Sostenuto { ch, .. } | AudioEvent::Soft { ch, .. }
             | AudioEvent::AllOff { ch } => *ch,
         }
     }

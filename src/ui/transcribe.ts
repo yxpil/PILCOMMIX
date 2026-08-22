@@ -215,9 +215,9 @@ export async function transcribePlay() {
 }
 $id("btn-trans-play").addEventListener("click", () => { transcribePlay(); });
 
-// 恢复通道音量(播放结束/停止时)
+// 恢复通道音量(播放结束/停止时;覆盖 64 通道,与引擎分身上限一致)
 function restoreChVolumes() {
-  for (let ch = 0; ch < 16; ch++) ra.setChannel(ch, 1.0, false);
+  for (let ch = 0; ch < 64; ch++) ra.setChannel(ch, 1.0, false);
 }
 
 // 播放统一清理:停止/失败/完成共用(通道音量必须恢复,否则残留归一增益脱离主增益控制)
@@ -270,3 +270,146 @@ listen<[boolean, number]>("trans-note", (e) => {
   if (on) { playNotes.add(midi); ledBlink(); } else playNotes.delete(midi);
   updateKeysUI();
 }).catch(() => {});
+
+// ============ WAV 导入 / 自动扒谱(widi 式)/ 音色匹配 / .plspmid 超高密度格式 ============
+let wavB64 = "";
+let wavName = "";
+type PlspNoteJson = { t: number; dur: number; midi: number; vel: number; track: number; bright: number; attackMs: number };
+type PlspToneJson = { track: number; waveType: string; params: Record<string, number> };
+let analysis: { bpm: number; duration: number; sampleRate: number; notes: PlspNoteJson[]; tones: PlspToneJson[] } | null = null;
+let plspB64 = "";
+
+function wavStatus(msg: string) {
+  const st = $id("wav-status");
+  st.textContent = msg;
+  st.classList.add("on");
+}
+
+$id("btn-wav-open").addEventListener("click", async () => {
+  try {
+    const [b64, name] = await ra.openWav();
+    wavB64 = b64;
+    wavName = name;
+    analysis = null;
+    plspB64 = "";
+    wavStatus(`已加载 ${name}(${(b64.length * 0.75 / 1024 / 1024).toFixed(1)}MB) — 可试听或自动扒谱`);
+  } catch (e) {
+    if (!String(e).includes("已取消")) toast("打开失败: " + String(e).slice(0, 60));
+  }
+});
+
+$id("btn-wav-play").addEventListener("click", () => {
+  if (!wavB64) { toast("请先打开 WAV"); return; }
+  ra.audioStart().catch(() => {});
+  ra.wavPlay(wavB64).then(() => toast("WAV 试听中(可同时弹奏合成器)")).catch((e) => toast("试听失败: " + String(e).slice(0, 60)));
+});
+$id("btn-wav-stop").addEventListener("click", () => { ra.wavStop(); toast("已停止试听"); });
+
+// 自动扒谱 + 音色匹配(Rust 傅里叶分析)
+$id("btn-wav-analyze").addEventListener("click", async () => {
+  if (!wavB64) { toast("请先打开 WAV"); return; }
+  const btn = $id("btn-wav-analyze") as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = "扒谱中…";
+  try {
+    const json = await ra.analyzeWav(wavB64);
+    const a = JSON.parse(json) as NonNullable<typeof analysis>;
+    analysis = a;
+    plspB64 = "";
+    wavStatus(`扒谱完成:${a.notes.length} 音符 · ${a.tones.length} 轨音色 · ~${Math.round(a.bpm)} BPM · 时长 ${a.duration}s · 密度 ${Math.round(a.duration > 0 ? a.notes.length / a.duration : 0)} 音符/秒`);
+    renderPlspJianpu(a);
+  } catch (e) {
+    toast("扒谱失败: " + String(e).slice(0, 60));
+  }
+  btn.disabled = false;
+  btn.textContent = "自动扒谱";
+});
+
+// 扒谱结果 → 简谱(按音区轨分组,时间轴对齐)
+function renderPlspJianpu(a: NonNullable<typeof analysis>) {
+  const el = $id("trans-output");
+  if (a.notes.length === 0) { el.textContent = "没检出音符(音频可能太轻或太噪)"; return; }
+  const spb = a.bpm > 1 ? 60 / a.bpm : 0.5;   // 秒/拍
+  const tracks = new Map<number, PlspNoteJson[]>();
+  for (const n of a.notes) {
+    if (!tracks.has(n.track)) tracks.set(n.track, []);
+    tracks.get(n.track)!.push(n);
+  }
+  const parts: string[] = [];
+  parts.push(`WAV ${wavName} · ~${Math.round(a.bpm)} BPM · ${a.notes.length} 音符 · ${tracks.size} 轨 · 时长 ${a.duration}s`);
+  parts.push("=".repeat(46));
+  for (const [tr, ns] of [...tracks.entries()].sort((x, y) => x[0] - y[0])) {
+    const tone = a.tones.find((t) => t.track === tr);
+    parts.push(`轨道 ${tr + 1}(${ns.length} 音符 · 音色 ${tone ? tone.waveType : "?"}):`);
+    const sorted = [...ns].sort((x, y) => x.t - y.t);
+    let line = "| ";
+    let prevEnd = 0;
+    for (const n of sorted) {
+      // 补休止(音符起始与上一音符结束的间隔)
+      let gapBeats = Math.max(0, (n.t - prevEnd) / spb);
+      while (gapBeats >= 0.25) {
+        const r = gapBeats >= 3.5 ? 4 : gapBeats >= 1.5 ? 2 : gapBeats >= 0.75 ? 1 : gapBeats >= 0.375 ? 0.5 : 0.25;
+        line += "0" + jpDuration(r) + " ";
+        gapBeats -= r;
+      }
+      const durBeats = Math.max(0.25, n.dur / spb);
+      line += midiToJianpu(n.midi) + jpDuration(durBeats) + "·" + velLabel(n.vel) + " ";
+      prevEnd = n.t + n.dur;
+    }
+    parts.push(line.trimEnd());
+    parts.push("");
+  }
+  el.textContent = parts.join("\n");
+}
+
+// 应用匹配音色:每轨音色参数灌入对应通道引擎(32 轨通道)
+$id("btn-wav-apply-tone").addEventListener("click", () => {
+  if (!analysis) { toast("请先自动扒谱"); return; }
+  for (const t of analysis.tones) {
+    const p = captureParams();
+    p.waveType = t.waveType as typeof p.waveType;
+    Object.assign(p, t.params);
+    ra.setEngineParams(t.track, p);
+  }
+  toast(`已应用 ${analysis.tones.length} 轨匹配音色`);
+});
+
+// 保存 .plspmid:扒谱结果 + 音色数据一体编码(密度 4 倍 × 轨道 2 倍)
+$id("btn-wav-save-plsp").addEventListener("click", async () => {
+  if (!analysis) { toast("请先自动扒谱"); return; }
+  try {
+    const beats = Number(($id("wav-beats") as HTMLSelectElement).value);
+    const b64 = await ra.plspmidEncode(
+      JSON.stringify(analysis.notes),
+      JSON.stringify(analysis.tones),
+      analysis.bpm > 1 ? analysis.bpm : 120,
+      beats,
+    );
+    await ra.plspmidSave(b64);
+    toast("已保存 .plspmid(音色 + 音符一体)");
+  } catch (e) {
+    if (!String(e).includes("已取消")) toast("保存失败: " + String(e).slice(0, 60));
+  }
+});
+
+// 打开 .plspmid
+$id("btn-plsp-open").addEventListener("click", async () => {
+  try {
+    const [b64, name] = await ra.plspmidOpen();
+    plspB64 = b64;
+    wavStatus(`已加载 ${name} — 超高密度(32 轨 × 1920 ticks/四分音符),点播放`);
+  } catch (e) {
+    if (!String(e).includes("已取消")) toast("打开失败: " + String(e).slice(0, 60));
+  }
+});
+
+// 播放 .plspmid(Rust 解码 → 每轨音色灌入 32 通道引擎 → 采样级调度)
+$id("btn-plsp-play").addEventListener("click", () => {
+  if (!plspB64) { toast("请先打开 .plspmid"); return; }
+  ra.audioStart().catch(() => {});
+  ra.smfStop();
+  playUiCleanup();
+  ra.plspmidPlay(plspB64).then(() => {
+    wavStatus(".plspmid 播放中(32 轨采样级调度)");
+  }).catch((e) => toast("播放失败: " + String(e).slice(0, 60)));
+});

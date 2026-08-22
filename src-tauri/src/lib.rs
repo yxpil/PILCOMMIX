@@ -74,6 +74,13 @@ fn midi_start_input(app: AppHandle, state: State<MidiState>, audio: State<AudioS
                     b.engines[0].set_bend((v14 as f32 / 8192.0) * 2.0);
                 } else if typ == 0xb0 && d1 == 64 {
                     b.engines[0].set_sustain(d2 >= 64);
+                } else if typ == 0xb0 && d1 == 66 {
+                    b.engines[0].set_sostenuto(d2 >= 64);
+                } else if typ == 0xb0 && d1 == 67 {
+                    b.engines[0].set_soft(d2 >= 64);
+                } else if typ == 0xb0 && d1 == 11 {
+                    // 表情踏板:主音量 0-100%
+                    b.master.volume = (d2 as f32 / 127.0).max(0.0).min(1.0);
                 }
                 // MIDI 键盘走带按钮(播放/暂停/录制):MMC 与通用 CC 双识别
                 if typ == 0xb0 {
@@ -215,6 +222,22 @@ fn set_sustain(audio: State<AudioState>, ch: usize, on: bool) {
     }
 }
 
+/// 持音踏板(CC66)
+#[tauri::command]
+fn set_sostenuto(audio: State<AudioState>, ch: usize, on: bool) {
+    if let Ok(mut b) = audio.bus.lock() {
+        if let Some(e) = b.engines.get_mut(ch) { e.set_sostenuto(on); }
+    }
+}
+
+/// 弱音踏板(CC67)
+#[tauri::command]
+fn set_soft(audio: State<AudioState>, ch: usize, on: bool) {
+    if let Ok(mut b) = audio.bus.lock() {
+        if let Some(e) = b.engines.get_mut(ch) { e.set_soft(on); }
+    }
+}
+
 /// 全部音符快速释放(通道)
 #[tauri::command]
 fn all_notes_off(audio: State<AudioState>, ch: usize) {
@@ -347,6 +370,253 @@ fn open_midi() -> Result<(String, String), String> {
         }
         None => Err("已取消".to_string()),
     }
+}
+
+// ============ WAV 导入 / 自动扒谱 / 音色匹配 / .plspmid 超高密度格式 ============
+
+/// 打开 WAV 文件(对话框 + 读取),返回 base64 与文件名
+#[tauri::command]
+fn open_wav() -> Result<(String, String), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("打开 WAV 文件")
+        .add_filter("WAV 音频", &["wav"])
+        .pick_file();
+    match file {
+        Some(path) => {
+            let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+            let b64 = base64_encode(&bytes);
+            Ok((b64, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()))
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 试听 WAV(重采样叠加到输出总线)
+#[tauri::command]
+fn wav_play(audio: State<AudioState>, bytes_base64: String) -> Result<(), String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let w = audio::wav::parse_wav(&bytes)?;
+    let mut b = audio.bus.lock().map_err(|e| e.to_string())?;
+    b.wav = Some(audio::WavPlayback { mono: w.mono, pos: 0.0, sample_rate: w.sample_rate, gain: 0.8 });
+    Ok(())
+}
+
+/// 停止 WAV 试听
+#[tauri::command]
+fn wav_stop(audio: State<AudioState>) {
+    if let Ok(mut b) = audio.bus.lock() { b.wav = None; }
+}
+
+/// 自动扒谱 + 音色匹配:解析 WAV → 音符检测(多音高/时值/力度)→ 音区自动分轨 → 每轨音色匹配
+/// 返回 JSON:{ bpm, duration, notes:[{t,dur,midi,vel,track,bright,attackMs}], tones:[{track,waveType,params:{}}] }
+#[tauri::command]
+fn analyze_wav(bytes_base64: String) -> Result<String, String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let w = audio::wav::parse_wav(&bytes)?;
+    let r = audio::analyze::transcribe(&w.mono, w.sample_rate);
+    // 按音区轨分组 → 每轨音色匹配
+    use std::collections::BTreeMap;
+    let mut by_track: BTreeMap<u8, Vec<audio::analyze::DetectedNote>> = BTreeMap::new();
+    for n in &r.notes { by_track.entry(n.track).or_default().push(n.clone()); }
+    let notes_json: Vec<serde_json::Value> = r.notes.iter().map(|n| serde_json::json!({
+        "t": (n.t * 1000.0).round() / 1000.0,
+        "dur": (n.dur * 1000.0).round() / 1000.0,
+        "midi": n.midi,
+        "vel": (n.vel * 100.0).round() / 100.0,
+        "track": n.track,
+        "bright": (n.bright * 1000.0).round() / 1000.0,
+        "attackMs": (n.attack_ms * 10.0).round() / 10.0,
+    })).collect();
+    let tones_json: Vec<serde_json::Value> = by_track.iter().map(|(&track, ns)| {
+        let t = audio::tone_match::match_tone(ns);
+        let params: serde_json::Map<String, serde_json::Value> = t.params.iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
+        serde_json::json!({ "track": track, "waveType": t.wave_type, "params": params })
+    }).collect();
+    Ok(serde_json::json!({
+        "bpm": (r.bpm * 10.0).round() / 10.0,
+        "duration": (r.duration_sec * 100.0).round() / 100.0,
+        "sampleRate": w.sample_rate,
+        "notes": notes_json,
+        "tones": tones_json,
+    }).to_string())
+}
+
+/// 编码 .plspmid(notes/tones 为 analyze_wav 返回的 JSON 数组字符串;bpm 换算 us_per_quarter)
+#[tauri::command]
+fn plspmid_encode(notes_json: String, tones_json: String, bpm: f32, beats_per_bar: u8) -> Result<String, String> {
+    let bytes = audio::plspmid::encode_from_json(&notes_json, &tones_json, bpm, beats_per_bar)?;
+    Ok(base64_encode(&bytes))
+}
+
+/// 打开 .plspmid 文件(对话框),返回 base64 与文件名
+#[tauri::command]
+fn plspmid_open() -> Result<(String, String), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("打开 .plspmid 文件")
+        .add_filter("PLSPMID 超高密度 MIDI", &["plspmid"])
+        .pick_file();
+    match file {
+        Some(path) => {
+            let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+            let b64 = base64_encode(&bytes);
+            Ok((b64, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()))
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 保存 .plspmid(对话框 + 写文件),返回是否成功
+#[tauri::command]
+fn plspmid_save(bytes_base64: String) -> Result<(), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("保存 .plspmid")
+        .set_file_name("untitled.plspmid")
+        .add_filter("PLSPMID 超高密度 MIDI", &["plspmid"])
+        .save_file();
+    match file {
+        Some(path) => {
+            let bytes = base64_decode(&bytes_base64)?;
+            std::fs::write(&path, &bytes).map_err(|e| format!("写入失败: {e}"))?;
+            Ok(())
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 播放 .plspmid:解码 → 每轨音色灌入对应通道引擎(32 轨)→ 采样级调度
+#[tauri::command]
+fn plspmid_play(app: tauri::AppHandle, audio: State<AudioState>, bytes_base64: String) -> Result<(), String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let plsp = audio::plspmid::decode(&bytes)?;
+    // 灌音色:wave_type + 参数(键名 camelCase)应用到 32 轨通道
+    {
+        let mut b = audio.bus.lock().map_err(|e| e.to_string())?;
+        for t in &plsp.tones {
+            let idx = t.track as usize;
+            if idx >= b.engines.len() { continue; }
+            let ep = audio::pilmu::build_params(&t.wave_type, &t.params);
+            b.engines[idx].set_params(ep);
+        }
+    }
+    // 音符事件 → 前端琴键高亮
+    let h = app.clone();
+    let on_note: Option<std::sync::Arc<dyn Fn(bool, u8) + Send + Sync>> =
+        Some(std::sync::Arc::new(move |on, midi| {
+            let _ = h.emit("trans-note", (on, midi));
+        }));
+    let handle = audio::player::play_plspmid(audio.bus.clone(), plsp, 300, on_note)?;
+    let mut p = audio.player.lock().unwrap();
+    if let Some(old) = p.take() { old.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed); }
+    *p = Some(handle);
+    Ok(())
+}
+
+// ============ .PILMU 多轨音乐工程格式(COMMIX 主格式) ============
+
+/// 打开 MP3 文件(工程音频轨导入)
+#[tauri::command]
+fn open_mp3() -> Result<(String, String), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("打开 MP3 文件")
+        .add_filter("MP3 音频", &["mp3"])
+        .pick_file();
+    match file {
+        Some(path) => {
+            let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+            let b64 = base64_encode(&bytes);
+            Ok((b64, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()))
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 打开 .PILMU 工程文件,返回 (base64, 文件名)
+#[tauri::command]
+fn pilmu_open() -> Result<(String, String), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("打开 PILMU 工程")
+        .add_filter("PILMU 音乐工程", &["pilmu"])
+        .pick_file();
+    match file {
+        Some(path) => {
+            let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+            let b64 = base64_encode(&bytes);
+            Ok((b64, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()))
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 保存 .PILMU 工程(对话框 + 写文件)
+#[tauri::command]
+fn pilmu_save(bytes_base64: String) -> Result<(), String> {
+    let file = rfd::FileDialog::new()
+        .set_title("保存 PILMU 工程")
+        .set_file_name("untitled.pilmu")
+        .add_filter("PILMU 音乐工程", &["pilmu"])
+        .save_file();
+    match file {
+        Some(path) => {
+            let bytes = base64_decode(&bytes_base64)?;
+            std::fs::write(&path, &bytes).map_err(|e| format!("写入失败: {e}"))?;
+            Ok(())
+        }
+        None => Err("已取消".to_string()),
+    }
+}
+
+/// 打包 .PILMU:manifest JSON + 资源(name, base64)列表 → 工程字节
+#[tauri::command]
+fn pilmu_build(manifest_json: String, resources: Vec<(String, String)>) -> Result<String, String> {
+    let manifest: audio::pilmu::PilmuManifest = serde_json::from_str(&manifest_json)
+        .map_err(|e| format!("工程清单解析失败: {e}"))?;
+    let mut res: Vec<(String, Vec<u8>)> = Vec::with_capacity(resources.len());
+    for (name, b64) in resources {
+        res.push((name, base64_decode(&b64)?));
+    }
+    let bytes = audio::pilmu::build_pilmu(&manifest, &res)?;
+    Ok(base64_encode(&bytes))
+}
+
+/// 解包 .PILMU:返回 (manifest_json, 资源列表[(name, base64)])
+#[tauri::command]
+fn pilmu_extract(bytes_base64: String) -> Result<(String, Vec<(String, String)>), String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let (manifest, resources) = audio::pilmu::parse_pilmu(&bytes)?;
+    let manifest_json = serde_json::to_string(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
+    let res = resources.into_iter().map(|(n, d)| (n, base64_encode(&d))).collect();
+    Ok((manifest_json, res))
+}
+
+/// 播放 .PILMU 工程:音频轨(WAV/MP3)混合 + MIDI 轨(plspmid 32 轨 / mid 程序变更切音色)
+#[tauri::command]
+fn pilmu_play(app: tauri::AppHandle, audio: State<AudioState>, bytes_base64: String) -> Result<(), String> {
+    let bytes = base64_decode(&bytes_base64)?;
+    let (manifest, resources) = audio::pilmu::parse_pilmu(&bytes)?;
+    let res: std::collections::HashMap<String, Vec<u8>> = resources.into_iter().collect();
+    let start_sample = {
+        let b = audio.bus.lock().map_err(|e| e.to_string())?;
+        b.sample_clock + (300 * audio::dsp::sr() as u64) / 1000
+    };
+    let plan = audio::pilmu::plan_playback(&manifest, &res, start_sample)?;
+    {
+        let mut b = audio.bus.lock().map_err(|e| e.to_string())?;
+        b.audio_tracks.clear();
+        for (mono, sample_rate, gain, pan, offset_samples) in plan.audio_tracks {
+            b.audio_tracks.push(audio::AudioTrackPlayback { mono, pos: 0.0, sample_rate, gain, pan, offset_samples });
+        }
+    }
+    let h = app.clone();
+    let on_note: Option<std::sync::Arc<dyn Fn(bool, u8) + Send + Sync>> =
+        Some(std::sync::Arc::new(move |on, midi| {
+            let _ = h.emit("trans-note", (on, midi));
+        }));
+    let handle = audio::player::spawn_player_events(audio.bus.clone(), plan.events, plan.end_sample, on_note)?;
+    let mut p = audio.player.lock().unwrap();
+    if let Some(old) = p.take() { old.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed); }
+    *p = Some(handle);
+    Ok(())
 }
 
 /// 简易 base64 编码(零依赖)
@@ -516,6 +786,8 @@ pub fn run() {
             set_custom_anchors,
             set_bend,
             set_sustain,
+            set_sostenuto,
+            set_soft,
             all_notes_off,
             set_master,
             set_sample_rate,
@@ -532,6 +804,20 @@ pub fn run() {
             save_recording,
             save_midi,
             open_midi,
+            open_wav,
+            open_mp3,
+            wav_play,
+            wav_stop,
+            analyze_wav,
+            plspmid_encode,
+            plspmid_open,
+            plspmid_save,
+            plspmid_play,
+            pilmu_open,
+            pilmu_save,
+            pilmu_build,
+            pilmu_extract,
+            pilmu_play,
             open_external,
             http_get
         ])

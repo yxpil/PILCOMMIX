@@ -211,6 +211,9 @@ impl Plugin for CommixPlugin {
                     0x90 if d2 > 0 => Some(AudioEvent::NoteOn { ch, midi: d1, vel: d2 as f32 / 127.0 }),
                     0x80 | 0x90 => Some(AudioEvent::NoteOff { ch, midi: d1 }),
                     0xb0 if d1 == 64 => Some(AudioEvent::Sustain { ch, on: d2 >= 64 }),
+                    0xb0 if d1 == 66 => Some(AudioEvent::Sostenuto { ch, on: d2 >= 64 }),
+                    0xb0 if d1 == 67 => Some(AudioEvent::Soft { ch, on: d2 >= 64 }),
+                    0xb0 if d1 == 11 => { self.bus.master.volume = (d2 as f32 / 127.0).clamp(0.0, 1.0); None }
                     0xc0 => { self.program_change(ch, d1); None }
                     0xe0 => {
                         let v14 = (d1 as i32 | ((d2 as i32) << 7)) - 8192;

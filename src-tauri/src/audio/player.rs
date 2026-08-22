@@ -23,13 +23,59 @@ pub fn play_smf(
         b.sample_clock + (start_delay_ms * super::dsp::sr() as u64) / 1000
     };
     let mut events = smf.to_events(start_sample);
-    // 结束时全通道释放
     let end_sample = start_sample + (smf.duration_sec() * super::dsp::sr() as f64) as u64;
     for ch in 0..super::N_CHANNELS {
         events.push((end_sample, AudioEvent::AllOff { ch }));
     }
-    events.sort_by_key(|(t, _)| *t);
+    spawn_player(bus, events, end_sample, on_note)
+}
 
+/// 启动 .plspmid 播放:32 轨超高密度事件流(音色已由调用方灌入各通道引擎)
+pub fn play_plspmid(
+    bus: Arc<std::sync::Mutex<AudioBus>>,
+    plsp: super::plspmid::PlspMid,
+    start_delay_ms: u64,
+    on_note: Option<Arc<dyn Fn(bool, u8) + Send + Sync>>,
+) -> Result<PlayerHandle, String> {
+    let start_sample = {
+        let b = bus.lock().map_err(|e| e.to_string())?;
+        b.sample_clock + (start_delay_ms * super::dsp::sr() as u64) / 1000
+    };
+    let sec_per_tick = (plsp.us_per_quarter as f64 / 1e6) / plsp.division as f64;
+    let sr = super::dsp::sr() as f64;
+    let mut events: Vec<(u64, AudioEvent)> = Vec::with_capacity(plsp.notes.len() * 2);
+    for n in &plsp.notes {
+        let t0 = start_sample + (n.tick as f64 * sec_per_tick * sr) as u64;
+        let t1 = start_sample + ((n.tick + n.dur) as f64 * sec_per_tick * sr) as u64;
+        events.push((t0, AudioEvent::NoteOn { ch: n.track as usize, midi: n.midi, vel: n.vel as f32 / 127.0 }));
+        events.push((t1, AudioEvent::NoteOff { ch: n.track as usize, midi: n.midi }));
+    }
+    let end_sample = start_sample + (super::plspmid::duration_sec(&plsp) as f64 * sr) as u64;
+    for ch in 0..super::N_CHANNELS {
+        events.push((end_sample, AudioEvent::AllOff { ch }));
+    }
+    events.sort_by_key(|(t, _)| *t);
+    spawn_player(bus, events, end_sample, on_note)
+}
+
+/// 播放外部事件流(.PILMU 工程播放:多轨合并后直接注入)
+pub fn spawn_player_events(
+    bus: Arc<std::sync::Mutex<AudioBus>>,
+    events: Vec<(u64, AudioEvent)>,
+    end_sample: u64,
+    on_note: Option<Arc<dyn Fn(bool, u8) + Send + Sync>>,
+) -> Result<PlayerHandle, String> {
+    spawn_player(bus, events, end_sample, on_note)
+}
+
+/// 公共播放线程:按采样时刻分批注入事件,结束后自动退出
+fn spawn_player(
+    bus: Arc<std::sync::Mutex<AudioBus>>,
+    mut events: Vec<(u64, AudioEvent)>,
+    end_sample: u64,
+    on_note: Option<Arc<dyn Fn(bool, u8) + Send + Sync>>,
+) -> Result<PlayerHandle, String> {
+    events.sort_by_key(|(t, _)| *t);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let flag = stop_flag.clone();
     let bus2 = bus.clone();

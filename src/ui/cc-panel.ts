@@ -1,9 +1,9 @@
 // 旋钮映射选项卡:CC → 参数动作,用户自定义绑定 + 动作执行器
 import { engine } from "../core/store";
 import { ra } from "../core/rust-audio";
-import { CC_ACTIONS, loadCcMap, saveCcMap } from "../core/cc-map";
+import { CC_ACTIONS, loadCcMap, saveCcMap, KBD_BINDABLE, loadKbdMap, saveKbdMap } from "../core/cc-map";
 import { $id, toast } from "./dom";
-import { shiftOctave } from "./keyboard";
+import { shiftOctave, setSustainPedal } from "./keyboard";
 import { arpToggleFromMidi } from "./arpeggio";
 
 // ============ 动作执行器(统一入口:midi.ts 与映射面板共用) ============
@@ -35,20 +35,36 @@ function ensureModTarget() {
   }
 }
 
-export function applyCcAction(action: string, val: number, cc: number) {
+export function applyCcAction(action: string, val: number, cc: number, silent = false) {
   const v = val / 127;
   switch (action) {
     case "sustain": {
-      ra.setSustain(0, val >= 64);
-      const led = $id("sustain-led"); if (led) led.classList.toggle("on", val >= 64);
-      const kled = $id("kbd-sustain-led"); if (kled) kled.classList.toggle("on", val >= 64);
-      const kst = $id("kbd-status"); if (kst) kst.classList.toggle("on", val >= 64);
-      toast(val >= 64 ? "延音踏板:开" : "延音踏板:关");
+      setSustainPedal(val >= 64);
+      if (!silent) toast(val >= 64 ? "延音踏板:开" : "延音踏板:关");
+      return;
+    }
+    case "sostenuto": {
+      ra.setSostenuto(0, val >= 64);
+      showLinkStatus(val >= 64 ? "持音踏板:开" : "持音踏板:关");
+      if (!silent) toast(val >= 64 ? "持音踏板:开" : "持音踏板:关");
+      return;
+    }
+    case "soft": {
+      ra.setSoft(0, val >= 64);
+      showLinkStatus(val >= 64 ? "弱音踏板:开" : "弱音踏板:关");
+      if (!silent) toast(val >= 64 ? "弱音踏板:开" : "弱音踏板:关");
+      return;
+    }
+    case "expression": {
+      const v2 = Math.max(0, Math.min(1, val / 127));
+      ra.setMaster("volume", v2);
+      setSlider("volume", String(Math.round(v2 * 100)), Math.round(v2 * 100) + "%");
+      showLinkStatus(`表情: ${Math.round(v2 * 100)}%`);
       return;
     }
     case "chord_hold":
       ra.setSustain(0, val >= 64);
-      toast(val >= 64 ? "和弦保持:开" : "和弦保持:关");
+      if (!silent) toast(val >= 64 ? "和弦保持:开" : "和弦保持:关");
       return;
     case "mod_depth": {
       ensureModTarget();
@@ -223,5 +239,53 @@ $id("btn-ccmap-add").addEventListener("click", () => {
   renderCcMapList();
   toast(`已绑定:CC ${cc} → ${CC_ACTIONS[act]}`);
 });
+
+// ============ 键盘按键绑定面板(特殊键/小键盘 → 动作) ============
+const kbdKeySel = $id("kbdmap-key") as HTMLSelectElement;
+kbdKeySel.innerHTML = Object.entries(KBD_BINDABLE)
+  .map(([k, name]) => `<option value="${k}">${name}</option>`)
+  .join("");
+const kbdActionSel = $id("kbdmap-action") as HTMLSelectElement;
+kbdActionSel.innerHTML = Object.entries(CC_ACTIONS)
+  .map(([k, name]) => `<option value="${k}">${name}</option>`)
+  .join("");
+
+function renderKbdMapList() {
+  const list = $id("kbdmap-list");
+  const m = loadKbdMap();
+  const entries = Object.entries(m).sort((a, b) => (KBD_BINDABLE[a[0]] ?? a[0]).localeCompare(KBD_BINDABLE[b[0]] ?? b[0], "zh"));
+  if (entries.length === 0) {
+    list.innerHTML = '<div class="vel-hint">暂无绑定。选择按键和动作后点「绑定」。</div>';
+    return;
+  }
+  list.innerHTML = entries.map(([code, act]) =>
+    `<div class="map-row">
+      <span class="map-prog">${KBD_BINDABLE[code] ?? code}</span>
+      <span class="map-name">→ ${CC_ACTIONS[act] ?? act}</span>
+      <button class="tool-btn map-del" data-code="${code}">解绑</button>
+    </div>`
+  ).join("");
+  list.querySelectorAll(".map-del").forEach((b) => {
+    b.addEventListener("click", () => {
+      const m2 = loadKbdMap();
+      delete m2[(b as HTMLElement).dataset.code as string];
+      saveKbdMap(m2);
+      renderKbdMapList();
+      toast("已解绑");
+    });
+  });
+}
+
+$id("btn-kbdmap-add").addEventListener("click", () => {
+  const code = kbdKeySel.value;
+  const act = kbdActionSel.value;
+  const m = loadKbdMap();
+  m[code] = act;
+  saveKbdMap(m);
+  renderKbdMapList();
+  toast(`已绑定:${KBD_BINDABLE[code]} → ${CC_ACTIONS[act]}`);
+});
+
+renderKbdMapList();
 
 renderCcMapList();

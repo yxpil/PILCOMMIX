@@ -162,6 +162,9 @@ pub struct SynthEngine {
     pub voices: Vec<Voice>,
     voice_order: Vec<usize>,
     pub sustain_pedal: bool,
+    pub sostenuto_pedal: bool,
+    pub soft_pedal: bool,
+    sostenuto_captured: Vec<u8>,  // 持音踏板踩下瞬间活跃的 midi 快照
     pub bend_cents: f32,
     noise: Vec<f32>,           // 锤击噪声缓冲(60ms)
     pub wt_bank: Vec<Vec<f32>>, // 波表缓存(槽位或主波形)
@@ -180,6 +183,9 @@ impl SynthEngine {
             voices: Vec::new(),
             voice_order: Vec::new(),
             sustain_pedal: false,
+            sostenuto_pedal: false,
+            soft_pedal: false,
+            sostenuto_captured: Vec::new(),
             bend_cents: 0.0,
             noise,
             wt_bank,
@@ -345,10 +351,14 @@ impl SynthEngine {
     }
 
     pub fn note_off(&mut self, midi: u8, fast: bool) {
-        // 延音踏板:挂起
-        if self.sustain_pedal && !fast {
+        // 延音/持音踏板:挂起(任一命中都保留声音;持音只挂踩下瞬间已活跃的音)
+        let sost_hit = self.sostenuto_pedal && !fast && self.sostenuto_captured.contains(&midi);
+        if self.sustain_pedal && !fast || sost_hit {
             for v in self.voices.iter_mut() {
-                if v.midi == midi { v.pedaled = true; }
+                if v.midi == midi {
+                    if self.sustain_pedal { v.pedaled = true; }
+                    if sost_hit { v.sostened = true; }
+                }
             }
             return;
         }
@@ -374,6 +384,31 @@ impl SynthEngine {
                 }
             }
         }
+    }
+
+    /// 持音踏板(CC66):踩下时已按住的音挂起,之后按的音不受影响;松开统一释放
+    pub fn set_sostenuto(&mut self, on: bool) {
+        self.sostenuto_pedal = on;
+        if on {
+            let mut captured: Vec<u8> = self.voices.iter()
+                .filter(|v| !v.releasing).map(|v| v.midi).collect();
+            captured.sort_unstable();
+            captured.dedup();
+            self.sostenuto_captured = captured;
+        } else {
+            self.sostenuto_captured.clear();
+            for i in (0..self.voices.len()).rev() {
+                if self.voices[i].sostened {
+                    self.voices[i].sostened = false;
+                    self.voices[i].release(false);
+                }
+            }
+        }
+    }
+
+    /// 弱音踏板(CC67):输出音量降为 60%
+    pub fn set_soft(&mut self, on: bool) {
+        self.soft_pedal = on;
     }
 
     /// 弯音(半音)
@@ -416,9 +451,10 @@ impl SynthEngine {
             out_r[s] += acc[1];
         }
     }
-    // 增益(音量改为增益选项:0-2 线性)
+    // 增益(音量改为增益选项:0-2 线性;弱音踏板再乘 0.6)
     pub fn apply_gain(&mut self, out_l: &mut [f32], out_r: &mut [f32], block: usize) {
-        let g = self.params.gain;
+        let mut g = self.params.gain;
+        if self.soft_pedal { g *= 0.6; }
         if (g - 1.0).abs() > 1e-4 {
             for i in 0..block { out_l[i] *= g; out_r[i] *= g; }
         }
@@ -473,6 +509,44 @@ mod tests {
         assert!(e.voices.iter().any(|v| v.pedaled), "pedaled voice should persist");
         e.set_sustain(false);
         assert!(e.voices.iter().all(|v| !v.pedaled), "pedal up releases");
+    }
+
+    #[test]
+    fn sostenuto_holds_only_captured_notes() {
+        let mut e = SynthEngine::new(test_params("saw"));
+        e.note_on(60, 1.0, 0.0);
+        e.note_on(62, 1.0, 0.0);
+        e.set_sostenuto(true);          // 踩下:快照 60,62
+        e.note_on(64, 1.0, 0.0);        // 之后按的音不受持音影响
+        e.note_off(64, false);
+        assert!(e.voices.iter().any(|v| v.midi == 64 && v.releasing),
+            "note pressed after sostenuto must release normally");
+        e.note_off(60, false);          // 踩下时已按住的音 → 挂起
+        assert!(e.voices.iter().any(|v| v.midi == 60 && v.sostened && !v.releasing),
+            "captured note must be held by sostenuto");
+        e.set_sostenuto(false);
+        assert!(e.voices.iter().filter(|v| v.midi == 60).all(|v| v.releasing),
+            "sostenuto release must free captured notes");
+    }
+
+    #[test]
+    fn soft_pedal_scales_gain() {
+        let mut e = SynthEngine::new(test_params("saw"));
+        let mut l1 = [1.0f32; 64];
+        let mut r1 = [1.0f32; 64];
+        e.apply_gain(&mut l1, &mut r1, 64);
+        let normal = l1[0];
+        e.set_soft(true);
+        let mut l2 = [1.0f32; 64];
+        let mut r2 = [1.0f32; 64];
+        e.apply_gain(&mut l2, &mut r2, 64);
+        assert!((l2[0] - normal * 0.6).abs() < 1e-4,
+            "soft pedal scales to 0.6x: got {} expected {}", l2[0], normal * 0.6);
+        e.set_soft(false);
+        let mut l3 = [1.0f32; 64];
+        let mut r3 = [1.0f32; 64];
+        e.apply_gain(&mut l3, &mut r3, 64);
+        assert!((l3[0] - normal).abs() < 1e-4, "soft release restores gain");
     }
 
     #[test]

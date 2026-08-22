@@ -2,6 +2,7 @@
 import { velAnchors, velMin, velPower, applyVelocityCurve, setVelMin, setVelPower } from "../core/store";
 import { ra } from "../core/rust-audio";
 import { $id } from "./dom";
+import { traceColor, lineColor, bgColor } from "./theme";
 export let velDragging: number | null = null;
 export const VEL_CURVES: Record<string, number[]> = {
   linear: [0, 0.25, 0.5, 0.75, 1],
@@ -32,7 +33,7 @@ export function drawVelCurve() {
   const py = (y: number) => ch - pad - y * (ch - pad * 2);
   velCtx.clearRect(0, 0, cw, ch);
   // 参考对角线(线性虚线)
-  velCtx.strokeStyle = "rgba(149,213,178,0.25)";
+  velCtx.strokeStyle = lineColor(0.25);
   velCtx.setLineDash([4, 4]);
   velCtx.beginPath();
   velCtx.moveTo(px(0), py(0));
@@ -40,9 +41,9 @@ export function drawVelCurve() {
   velCtx.stroke();
   velCtx.setLineDash([]);
   // 曲线(实际映射:锚点插值 + 响度/衰减变换后的采样曲线)
-  velCtx.strokeStyle = "#7dff9b";
+  velCtx.strokeStyle = traceColor();
   velCtx.lineWidth = 2;
-  velCtx.shadowColor = "rgba(125,255,155,0.4)";
+  velCtx.shadowColor = traceColor(0.4);
   velCtx.shadowBlur = 5;
   velCtx.beginPath();
   const SAMPLES = 60;
@@ -57,11 +58,11 @@ export function drawVelCurve() {
   velCtx.shadowBlur = 0;
   // 锚点
   for (const a of velAnchors) {
-    velCtx.fillStyle = "#95d5b2";
+    velCtx.fillStyle = traceColor();
     velCtx.beginPath();
     velCtx.arc(px(a.x), py(a.y), 4, 0, Math.PI * 2);
     velCtx.fill();
-    velCtx.strokeStyle = "#06130c";
+    velCtx.strokeStyle = bgColor(0.9);
     velCtx.lineWidth = 1.5;
     velCtx.stroke();
   }
@@ -128,6 +129,9 @@ $id("vel-power").addEventListener("input", () => {
   drawVelCurve();
   pushVelCurve();
 });
+
+// 主题切换 → 力度曲线重绘换色
+window.addEventListener("theme-changed", () => drawVelCurve());
 
 // ============ 转录(SMF 文件 / 录音流程 → 简谱) ============
 // 简谱:1-7 数字 + ' 高八度 + _ 低八度;半音用 # 前缀

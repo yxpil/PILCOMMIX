@@ -67,12 +67,35 @@ export const ra = {
     invoke("set_custom_anchors", { ch, anchors: anchors.map((a) => [a.x, a.y]) }),
   setBend: (ch: number, semitones: number) => invoke("set_bend", { ch, semitones }),
   setSustain: (ch: number, on: boolean) => invoke("set_sustain", { ch, on }),
+  setSostenuto: (ch: number, on: boolean) => invoke("set_sostenuto", { ch, on }),
+  setSoft: (ch: number, on: boolean) => invoke("set_soft", { ch, on }),
   setMaster: (key: string, value: number) => invoke("set_master", { key, value }),
   setSampleRate: (hz: number) => invoke("set_sample_rate", { hz }),
   recordStart: () => invoke("record_start"),
   recordStop: (): Promise<number[]> => invoke("record_stop"),
   smfPlay: (b64: string) => invoke("smf_play", { bytesBase64: b64 }),
   smfStop: () => invoke("smf_stop"),
+  // WAV 导入 / 试听
+  openWav: (): Promise<[string, string]> => invoke("open_wav"),
+  openMidi: (): Promise<[string, string]> => invoke("open_midi"),
+  wavPlay: (b64: string) => invoke("wav_play", { bytesBase64: b64 }),
+  wavStop: () => invoke("wav_stop"),
+  // 自动扒谱 + 音色匹配(返回 JSON 字符串)
+  analyzeWav: (b64: string): Promise<string> => invoke("analyze_wav", { bytesBase64: b64 }),
+  // .plspmid 超高密度格式(32 轨,密度 4 倍)
+  plspmidEncode: (notesJson: string, tonesJson: string, bpm: number, beatsPerBar: number): Promise<string> =>
+    invoke("plspmid_encode", { notesJson, tonesJson, bpm, beatsPerBar }),
+  plspmidOpen: (): Promise<[string, string]> => invoke("plspmid_open"),
+  plspmidSave: (b64: string) => invoke("plspmid_save", { bytesBase64: b64 }),
+  plspmidPlay: (b64: string) => invoke("plspmid_play", { bytesBase64: b64 }),
+  // .PILMU 多轨音乐工程(主格式:多条 MIDI/plspmid/WAV/MP3 + 拖拽编辑)
+  openMp3: (): Promise<[string, string]> => invoke("open_mp3"),
+  pilmuOpen: (): Promise<[string, string]> => invoke("pilmu_open"),
+  pilmuSave: (b64: string) => invoke("pilmu_save", { bytesBase64: b64 }),
+  pilmuBuild: (manifestJson: string, resources: [string, string][]): Promise<string> =>
+    invoke("pilmu_build", { manifestJson, resources }),
+  pilmuExtract: (b64: string): Promise<[string, [string, string][]]> => invoke("pilmu_extract", { bytesBase64: b64 }),
+  pilmuPlay: (b64: string) => invoke("pilmu_play", { bytesBase64: b64 }),
   // 节拍器(Rust 采样级 click)
   metroSet: (running: boolean, bpm: number, volume: number) =>
     invoke("metro_set", { running, bpm, volume }),

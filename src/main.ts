@@ -2,6 +2,7 @@
 // 引擎与纯逻辑在 core/,各面板在 ui/,本文件只做组装
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
+import "./ui/theme";   // 主题最先应用(html[data-theme] 覆盖 CSS 变量),避免启动闪烁
 import { applyWaveToEngine } from "./core/store";
 import { ra } from "./core/rust-audio";
 import { $id } from "./ui/dom";
@@ -27,20 +28,27 @@ import "./ui/map-panel";
 import "./ui/cc-panel";
 import "./ui/midi-test";
 import "./ui/arpeggio";
+import "./ui/pilmu";
 import "./ui/updater";
 
 // ============ 窗口控制 ============
 const win = getCurrentWindow();
 $id("btn-min").addEventListener("click", () => win.minimize());
 $id("btn-max").addEventListener("click", async () => {
-  if (await win.isMaximized()) await win.unmaximize();
-  else await win.maximize();
+  // 彻底全屏(隐藏菜单栏/任务栏),再点还原
+  const fs = await win.isFullscreen();
+  await win.setFullscreen(!fs);
 });
 $id("btn-close").addEventListener("click", () => win.close());
+// Esc 退出全屏(全屏时按 Esc 还原窗口)
+window.addEventListener("keydown", async (e) => {
+  if (e.code === "Escape") {
+    try { if (await win.isFullscreen()) await win.setFullscreen(false); } catch { /* 忽略 */ }
+  }
+});
 
 // ============ 启动 ============
-$id("keymap-hint").textContent =
-  "黑键: 数字行 1 2 3 4 5 6 7 8 9 0 · 白键: Q W E R T Y U I O P + A S D F G H J K L ; · ↑↓ 移八度 · 数字行黑键从 C#3 起连续";
+// 琴键说明已直接标在每个琴键上(按键名 + 音名),无需底部汇总提示
 
 // 内置预设导入(旧版精调音色,全量)
 seedBuiltinPresets();
@@ -52,8 +60,10 @@ let ratioFixing = false;
 window.addEventListener("resize", async () => {
   if (ratioFixing) return;
   let maximized = false;
+  let fullscreen = false;
   try { maximized = await win.isMaximized(); } catch { maximized = false; }
-  if (maximized) return;   // 最大化:跟随屏幕比例
+  try { fullscreen = await win.isFullscreen(); } catch { fullscreen = false; }
+  if (maximized || fullscreen) return;   // 最大化/全屏:跟随屏幕比例,不修正
   const w = window.innerWidth, h = window.innerHeight;
   const r = w / h;
   if (Math.abs(r - DESIGN_RATIO) > 0.03) {

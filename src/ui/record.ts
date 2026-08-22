@@ -4,6 +4,7 @@ import { midiRec, recStart, setRecStart } from "../core/store";
 import { ra } from "../core/rust-audio";
 import { $id, toast } from "./dom";
 import { getLatestScope } from "./scope";
+import { traceColor } from "./theme";   // 录音轨道波形随主题反色
 export let recTimer: number | null = null;
 export let audioRecording = false;
 
@@ -26,7 +27,7 @@ export function drawTrackLoop() {
   const ctx = trackCanvas.getContext("2d")!;
   const data = getLatestScope();
   ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = "#95d5b2";
+  ctx.strokeStyle = traceColor();
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   const mid = h / 2;
@@ -49,10 +50,9 @@ $id("btn-record").addEventListener("click", async () => {
     audioRecording = true;
     $id("btn-record").classList.add("recording");
     ($id("btn-record").querySelector("span") as HTMLElement).textContent = "停止";
-    // 显示录音轨道,隐藏映射提示
+    // 显示录音轨道(琴键说明已标在琴键上,无需再隐藏提示)
     trackWrap.style.display = "block";
     trackWrap.classList.add("recording");
-    $id("keymap-hint").style.display = "none";
     resizeTrackCanvas();
     drawTrackLoop();
     recTimer = window.setInterval(() => {
@@ -77,7 +77,6 @@ export async function stopRecording() {
   $id("rec-time").textContent = "--:--";
   cancelAnimationFrame(trackRaf);
   trackWrap.classList.remove("recording");
-  $id("keymap-hint").style.display = "";
 
   try {
     const bytes = await ra.recordStop();   // Rust 直接产出 WAV 字节

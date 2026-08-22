@@ -4,6 +4,7 @@ import { ra } from "../core/rust-audio";
 import { WT_SLOT_NAMES, builtinWaveAt, interpAnchors, wtSlotFnAt, builtinAnchors, FnParser } from "../core/wave";
 import { WAVE_LEN } from "../core/engine";
 import { $id, toast } from "./dom";
+import { traceColor, lineColor } from "./theme";
 export const waveCanvas = $id("wave-canvas") as HTMLCanvasElement;
 export const ctx2d = waveCanvas.getContext("2d")!;
 
@@ -152,7 +153,7 @@ export function drawWave() {
   const showAnchors = isCustom || engine.waveType === "grain" || (isWt && wtDrawing);
 
   // 网格
-  ctx2d.strokeStyle = "rgba(149,213,178,0.07)";
+  ctx2d.strokeStyle = lineColor(0.07);
   ctx2d.lineWidth = 1;
   for (let i = 1; i < 8; i++) {
     ctx2d.beginPath();
@@ -185,14 +186,14 @@ export function drawWave() {
       ctx2d.stroke();
     }
     // 槽位分界线
-    ctx2d.strokeStyle = "rgba(149,213,178,0.15)";
+    ctx2d.strokeStyle = lineColor(0.15);
     ctx2d.lineWidth = 1;
     for (let s = 1; s < n - 1; s++) {
       const x = (s / (n - 1)) * w;
       ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, h); ctx2d.stroke();
     }
     // 当前形态位置
-    ctx2d.strokeStyle = "#7dff9b";
+    ctx2d.strokeStyle = traceColor();
     ctx2d.lineWidth = 1.5;
     ctx2d.beginPath(); ctx2d.moveTo(pos * w, 0); ctx2d.lineTo(pos * w, h); ctx2d.stroke();
     // 激活槽位标签(颜色与线一致)
@@ -202,7 +203,7 @@ export function drawWave() {
     ctx2d.fillStyle = WT_SLOT_COLORS[actJ % WT_SLOT_COLORS.length];
     ctx2d.fillText(wtSlotLabel(engine.wtSlots[actJ]), w - 46, h - 6);
   } else {
-    ctx2d.strokeStyle = "#95d5b2";
+    ctx2d.strokeStyle = traceColor();
     ctx2d.lineWidth = 2;
     ctx2d.beginPath();
     for (let i = 0; i <= w; i += 2) {
@@ -437,3 +438,6 @@ $id("harmonics").addEventListener("input", (e) => {
 
 // 启动时用初始锚点填充画笔采样缓冲
 syncGrainWaveFromAnchors();
+
+// 主题切换 → 波形重绘换色
+window.addEventListener("theme-changed", () => drawWave());

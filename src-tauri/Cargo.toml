@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "commix"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 
 [build-dependencies]
@@ -14,6 +14,8 @@ rfd = "0.15"
 midir = "0.10"
 cpal = "0.15"
 hound = "3"
+zip = "2"
+minimp3 = "0.5"
 
 [features]
 default = ["custom-protocol"]

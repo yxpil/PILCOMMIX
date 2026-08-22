@@ -1,14 +1,21 @@
 // 音频总线:16 个通道引擎分身 + 主效果链 + cpal 输出 + 录音/作用域数据
 pub mod arp;
+pub mod analyze;
+pub mod code_music;
 pub mod dsp;
 pub mod engine;
 pub mod fft;
 pub mod fx;
 pub mod metro;
+pub mod mp3;
+pub mod pilmu;
 pub mod player;
+pub mod plspmid;
 pub mod smart;
 pub mod smf;
+pub mod tone_match;
 pub mod voice;
+pub mod wav;
 // 常用类型提升到 audio:: 根(引用方 lib.rs / player.rs 路径不变)
 pub use arp::ArpState;
 pub use metro::MetroState;
@@ -23,7 +30,25 @@ use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 pub const BLOCK: usize = 256;
-pub const N_CHANNELS: usize = 16;
+pub const N_CHANNELS: usize = 64;   // 16→32→64:.plspmid 32 轨 + 多条 MIDI 轨同时播放(多轨工程)
+
+// ============ WAV 试听播放(重采样叠加,独立于引擎合成) ============
+pub struct WavPlayback {
+    pub mono: Vec<f32>,
+    pub pos: f64,           // 输出采样位置(线性插值重采样)
+    pub sample_rate: u32,
+    pub gain: f32,
+}
+
+// ============ 工程多轨音频播放(多条 WAV/MP3 同时混合) ============
+pub struct AudioTrackPlayback {
+    pub mono: Vec<f32>,
+    pub pos: f64,           // 输出采样计数(offset 前静音)
+    pub sample_rate: u32,
+    pub gain: f32,
+    pub pan: f32,           // -1..1
+    pub offset_samples: u64, // 轨道偏移(输出采样)
+}
 
 // ============ 采样级播放事件(音频回调消费) ============
 #[derive(Clone, Debug)]
@@ -32,6 +57,9 @@ pub enum AudioEvent {
     NoteOff { ch: usize, midi: u8 },
     Bend { ch: usize, semitones: f32 },
     Sustain { ch: usize, on: bool },
+    Sostenuto { ch: usize, on: bool },
+    Soft { ch: usize, on: bool },
+    Tone { ch: usize, wave_type: String, params: Vec<(String, f32)> },
     AllOff { ch: usize },
 }
 
@@ -79,6 +107,10 @@ pub struct AudioBus {
     metro_accent: bool,
     // 琶音器(采样级,注入 pending 事件队列)
     pub arp: ArpState,
+    // WAV 试听播放(导入的 wav 直接叠加输出)
+    pub wav: Option<WavPlayback>,
+    // 工程多轨音频播放(音频轨混合;MIDI 轨走引擎)
+    pub audio_tracks: Vec<AudioTrackPlayback>,
     // 通道音量/静音(多轨混音控制)
     pub ch_gain: [f32; N_CHANNELS],
     pub ch_mute: [bool; N_CHANNELS],
@@ -127,6 +159,8 @@ impl AudioBus {
             metro_click_left: 0,
             metro_accent: false,
             arp: ArpState::default(),
+            wav: None,
+            audio_tracks: Vec::new(),
             ch_gain: [1.0; N_CHANNELS],
             ch_mute: [false; N_CHANNELS],
             limiter: true,
@@ -201,6 +235,8 @@ impl AudioBus {
         self.pending.clear();
         self.recording.clear();
         self.recording_on = false;
+        // WAV 试听不随引擎重建丢失(位置与样本保持,采样率按原样重采样)
+        self.audio_tracks.clear();
     }
 
     // ============ 力度曲线(输入力度 → 输出力度,Rust 统一应用) ============
@@ -366,6 +402,12 @@ impl AudioBus {
                 AudioEvent::NoteOff { midi, .. } => eng.note_off(midi, false),
                 AudioEvent::Bend { semitones, .. } => eng.set_bend(semitones),
                 AudioEvent::Sustain { on, .. } => eng.set_sustain(on),
+                AudioEvent::Sostenuto { on, .. } => eng.set_sostenuto(on),
+                AudioEvent::Soft { on, .. } => eng.set_soft(on),
+                AudioEvent::Tone { wave_type, params, .. } => {
+                    let ep = crate::audio::pilmu::build_params(&wave_type, &params);
+                    eng.set_params(ep);
+                }
                 AudioEvent::AllOff { .. } => eng.all_off(),
             }
         }
@@ -401,6 +443,49 @@ impl AudioBus {
                 out_l[s] += tmp_l[s];
                 out_r[s] += tmp_r[s];
             }
+        }
+        // WAV 试听播放:线性插值重采样叠加(独立于引擎合成,进主效果链)
+        if self.wav.is_some() {
+            let out_sr = dsp::sr() as f64;
+            let mut done = false;
+            if let Some(w) = self.wav.as_mut() {
+                let step = w.sample_rate as f64 / out_sr;
+                for s in 0..block {
+                    let i = w.pos as usize;
+                    if i + 1 >= w.mono.len() { done = true; break; }
+                    let frac = (w.pos - i as f64) as f32;
+                    let v = w.mono[i] * (1.0 - frac) + w.mono[i + 1] * frac;
+                    out_l[s] += v * w.gain;
+                    out_r[s] += v * w.gain;
+                    w.pos += step;
+                }
+            }
+            if done { self.wav = None; }
+        }
+        // 工程多轨音频播放:多条 WAV/MP3 同时混合(音量/声像/偏移)
+        if !self.audio_tracks.is_empty() {
+            let out_sr = dsp::sr() as f64;
+            let mut done: Vec<usize> = Vec::new();
+            for (ti, t) in self.audio_tracks.iter_mut().enumerate() {
+                let step = t.sample_rate as f64 / out_sr;
+                let mut ended = false;
+                for s in 0..block {
+                    if t.pos >= t.offset_samples as f64 {
+                        let in_pos = t.pos * step;
+                        let i = in_pos as usize;
+                        if i + 1 >= t.mono.len() { ended = true; break; }
+                        let frac = (in_pos - i as f64) as f32;
+                        let v = t.mono[i] * (1.0 - frac) + t.mono[i + 1] * frac;
+                        let l = v * t.gain * (1.0 - t.pan).min(1.0);
+                        let r = v * t.gain * (1.0 + t.pan).min(1.0);
+                        out_l[s] += l;
+                        out_r[s] += r;
+                    }
+                    t.pos += 1.0;
+                }
+                if ended { done.push(ti); }
+            }
+            for &i in done.iter().rev() { self.audio_tracks.remove(i); }
         }
         let dt = 1.0 / dsp::sr();
         let send = self.reverb_send();
@@ -502,7 +587,8 @@ impl AudioEvent {
         match self {
             AudioEvent::NoteOn { ch, .. } | AudioEvent::NoteOff { ch, .. }
             | AudioEvent::Bend { ch, .. } | AudioEvent::Sustain { ch, .. }
-            | AudioEvent::AllOff { ch } => *ch,
+            | AudioEvent::Sostenuto { ch, .. } | AudioEvent::Soft { ch, .. }
+            | AudioEvent::Tone { ch, .. } | AudioEvent::AllOff { ch } => *ch,
         }
     }
 }
