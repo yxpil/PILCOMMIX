@@ -838,11 +838,13 @@
                 <label class="ck"><input type="checkbox" id="lock-current-tone" /> 只用当前音色(忽略文件程序变更)</label>
               </div>
               <button class="tool-btn" id="btn-trans-open"><svg class="ic"><use href="#i-folder"/></svg>打开 MIDI 文件</button>
+              <button class="tool-btn" id="btn-plsp-open"><svg class="ic"><use href="#i-folder"/></svg>打开 .plspmid</button>
+              <button class="tool-btn" id="btn-plsp-play"><svg class="ic"><use href="#i-play"/></svg>播放 .plspmid</button>
               <button class="tool-btn" id="btn-trans-play"><svg class="ic"><use href="#i-play"/></svg>播放</button>
               <button class="tool-btn" id="btn-trans-stop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
               <button class="tool-btn" id="btn-trans-clear"><svg class="ic"><use href="#i-clear"/></svg>清空</button>
             </div>
-            <div class="trans-status" id="trans-status">打开 MIDI 文件,点播放(虚拟按键演奏,用当前音色)</div>
+            <div class="trans-status" id="trans-status">打开 MIDI 或 .plspmid 文件,点播放(虚拟按键演奏,用当前音色)</div>
             <div class="trans-output" id="trans-output"></div>
 
             <div class="wav-row" style="margin-top:12px;border-top:1px dashed rgba(149,213,178,0.15);padding-top:10px">
@@ -859,8 +861,6 @@
                 <span class="vel-hint">拍/小节(1-256)</span>
               </div>
                 <button class="tool-btn" id="btn-wav-save-plsp">保存 .plspmid</button>
-                <button class="tool-btn" id="btn-plsp-open">打开 .plspmid</button>
-                <button class="tool-btn" id="btn-plsp-play">播放 .plspmid</button>
               <progress id="analyze-progress" max="100" value="0" style="display:none;width:100%;height:6px;margin-top:6px"></progress>
             </div>
             <div class="wav-status" id="wav-status">WAV 导入 → widi 式自动扒谱(傅里叶分析)→ 音色匹配 → 超高密度 .plspmid(32 轨 × 1920 ticks/四分音符)</div>
