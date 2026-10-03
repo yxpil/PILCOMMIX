@@ -268,6 +268,33 @@ mod tests {
         assert!(parse_wav(b"NOTWAVE....................").is_err());
     }
 
+    // --- 注入/畸形输入：解析器必须优雅返回 Err，绝不 panic ---
+
+    #[test]
+    fn rejects_truncated_and_malformed_wav_without_panic() {
+        // 太短
+        assert!(parse_wav(b"RIFF").is_err());
+        // 合法头但 fmt/data 缺失
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&36u32.to_le_bytes());
+        b.extend_from_slice(b"WAVE");
+        b.extend_from_slice(b"LIST");
+        b.extend_from_slice(&100u32.to_le_bytes()); // 声明超长，触发截断 break
+        b.extend_from_slice(&[0u8; 20]);
+        assert!(parse_wav(&b).is_err()); // 缺 fmt/data -> Err，不 panic
+    }
+
+    #[test]
+    fn rejects_zero_channels_or_samplerate() {
+        let mut b = make_pcm16_wav(&[0i16, 0, 0], 44100, 1);
+        // 改 channels=0 与 sample_rate=0（fmt 块 body+2..body+6）
+        // fmt body 偏移 = 12 + 8 = 20
+        b[22..24].copy_from_slice(&0u16.to_le_bytes()); // channels=0
+        let r = parse_wav(&b);
+        assert!(r.is_err(), "channels=0 应拒绝");
+    }
+
     #[test]
     fn full_pipeline_wav_to_plspmid() {
         // 端到端:真实 PCM16 WAV 字节 → parse_wav → transcribe(扒谱)→ match_tone(音色)

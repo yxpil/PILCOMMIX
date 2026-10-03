@@ -75,3 +75,56 @@ pub fn fft_magnitudes(x: &[f32], n: usize) -> Vec<f32> {
     }
     mag
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_input_gives_zero_spectrum() {
+        let n = 256;
+        let mag = fft_magnitudes(&vec![0.0; n], n);
+        assert_eq!(mag.len(), n / 2);
+        assert!(mag.iter().all(|&m| m.abs() < 1e-9));
+    }
+
+    #[test]
+    fn dc_input_energy_in_bin_zero() {
+        let n = 256;
+        let x = vec![1.0f32; n]; // 直流
+        let mag = fft_magnitudes(&x, n);
+        // bin0 应为全局最大（Hann 窗相干增益 0.5 -> DC ≈0.5）
+        let peak = mag.iter().cloned().fold(0.0f32, f32::max);
+        assert!((mag[0] - 0.5).abs() < 0.05, "DC+窗 mag0≈0.5, got {}", mag[0]);
+        assert!((peak - mag[0]).abs() < 1e-6, "DC 应在 bin0 出全局峰, peak={peak} at not-bin0");
+    }
+
+    #[test]
+    fn pure_sine_peaks_at_expected_bin() {
+        let n = 256;
+        // k=8 的整周期正弦 -> 能量集中在 bin 8
+        let k = 8;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * k as f64 * i as f64 / n as f64).sin() as f32)
+            .collect();
+        let mag = fft_magnitudes(&x, n);
+        // 找峰值 bin
+        let peak = mag
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(peak, k, "纯正弦应在 bin {k} 出峰, 实际在 {peak}");
+        assert!(mag[k] > 0.1);
+    }
+
+    #[test]
+    fn short_input_is_zero_padded_no_panic() {
+        // 输入短于 n：补零，不应 panic
+        let n = 256;
+        let mag = fft_magnitudes(&[1.0; 16], n);
+        assert_eq!(mag.len(), n / 2);
+        assert!(mag.iter().all(|m| m.is_finite()));
+    }
+}

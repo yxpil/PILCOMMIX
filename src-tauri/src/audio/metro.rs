@@ -30,3 +30,18 @@ impl Default for MetroState {
         Self { running: false, bpm: 120.0, volume: 0.5, beat: 0, next_sample: 0 }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metro_defaults() {
+        let m = MetroState::default();
+        assert!(!m.running);
+        assert_eq!(m.bpm, 120.0);
+        assert_eq!(m.volume, 0.5);
+        assert_eq!(m.beat, 0);
+        assert_eq!(m.next_sample, 0);
+    }
+}
