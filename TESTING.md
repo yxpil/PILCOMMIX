@@ -1,4 +1,10 @@
 # COMMIX (PILCOMMIX) 测试说明
+- 测试完成：是（2026-10-04）
+- 测试日期：2026-10-04
+- 测试内容：单元新增 7（audio/fft 零谱/DC/正弦峰值 bin/补零 4、audio/metro 默认态 1、audio/wav 畸形输入注入 2）；既有跨模块集成 pipeline（WAV→扒谱 transcribe→音色 match_tone→.plspmid 编解码）；注入 2（截断 WAV、channels=0 优雅返回 Err 不 panic）；钩子 0（事件链由既有 full_pipeline 往返测试覆盖）。本地 cargo test --lib 共 90 passed。
+- 运行命令：cd src-tauri; cargo test --lib（需先建最小 ../dist/index.html 占位）
+- 测试框架：Rust #[cfg(test)]
+- 模型：豆包（Doubao）生成
 
 Rust 端是 Tauri 应用，crate 位于 `src-tauri/`（包名 `commix`），核心是音频合成/扒谱引擎
 （`src-tauri/src/audio/`）。测试全部为 lib 内 `#[cfg(test)]`（纯音频数学与解析，不依赖 GUI/音频设备）。
